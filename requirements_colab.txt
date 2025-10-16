@@ -1,0 +1,28 @@
+# Core Streamlit dependencies
+streamlit>=1.28.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# AI/ML dependencies
+openai>=1.0.0
+google-generativeai>=0.3.0
+
+# Data processing
+numpy>=1.24.0
+python-dotenv>=1.0.0
+
+# Optional: For enhanced Excel support
+xlrd>=2.0.1
+
+# Logging and utilities
+logging
+typing-extensions>=4.7.0
+
+# FastAPI for backend (if needed)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+
+# Database (optional)
+sqlalchemy>=2.0.0
+sqlite3

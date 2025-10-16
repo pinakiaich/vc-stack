@@ -1,0 +1,18 @@
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Google Gemini Configuration (Optional)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Database Configuration
+DATABASE_URL=sqlite:///./local.db
+# For PostgreSQL: postgresql://user:password@localhost/dbname
+
+# Application Configuration
+LOG_LEVEL=INFO
+MAX_FIRMS_BATCH=50
+AI_MODEL=gpt-3.5-turbo
+
+# Streamlit Configuration
+STREAMLIT_SERVER_PORT=8501
+STREAMLIT_SERVER_ADDRESS=0.0.0.0
