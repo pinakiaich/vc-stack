@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import json
 import logging
 from config import Config
+from vc_expert_agent import VCExpertAgent
 
 class AIFilter:
     """AI-powered firm filtering using heuristics"""
@@ -12,6 +13,8 @@ class AIFilter:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self._setup_openai()
+        # Initialize VC expert agent
+        self.vc_expert = VCExpertAgent(config)
     
     def _setup_openai(self):
         """Initialize OpenAI client"""
@@ -29,20 +32,26 @@ class AIFilter:
         Returns:
             List of filtered firm results with scores and reasons
         """
+        api_key = self.config.get_openai_key()
+        
+        if not api_key:
+            self.logger.info("No API key available, using fallback filter")
+            return self._fallback_filter(df, heuristics, top_n)
+        
         try:
-            # Prepare firm data for AI analysis
+            # Prepare firm data for VC expert analysis
             firm_data = self._prepare_firm_data(df)
             
-            # Get AI analysis
-            ai_results = self._analyze_with_ai(firm_data, heuristics)
+            # Use VC Expert Agent for professional analysis
+            self.logger.info("Using VC Expert Agent for analysis")
+            expert_results = self.vc_expert.analyze_firms(firm_data, heuristics, top_n)
             
-            # Process and rank results
-            ranked_firms = self._rank_firms(ai_results, top_n)
-            
-            return ranked_firms
+            return expert_results
             
         except Exception as e:
-            self.logger.error(f"Error in AI filtering: {str(e)}")
+            self.logger.error(f"Error in VC Expert analysis: {str(e)}")
+            self.logger.info("Falling back to keyword matching")
+            # Return fallback with error info
             return self._fallback_filter(df, heuristics, top_n)
     
     def _prepare_firm_data(self, df: pd.DataFrame) -> List[Dict[str, str]]:
@@ -94,19 +103,23 @@ class AIFilter:
         ])
         
         return f"""
-        Analyze these firms based on the heuristics and rank them:
+        Analyze these firms based on the specific heuristics provided and rank them.
         
-        HEURISTICS: {heuristics}
+        USER'S HEURISTICS: {heuristics}
         
-        FIRMS:
+        FIRMS TO ANALYZE:
         {firms_text}
         
         For each firm, provide:
-        1. Match score (0-100)
-        2. Reason for the score
+        1. Match score (0-100) - How well it matches the specific heuristics
+        2. Detailed reason - Explain WHY it matches, referencing specific parts of the heuristics
+        
+        Example reason: "Matches B2B AI criteria with $8M revenue (exceeds $5M requirement), $280M valuation (within $200-400M range), Series B stage (as specified), backed by Sequoia (top-tier VC as required)"
         
         Return as JSON array with format:
-        [{{"name": "firm_name", "score": 85, "reason": "explanation"}}]
+        [{{"name": "firm_name", "score": 85, "reason": "detailed explanation of match against heuristics"}}]
+        
+        Important: Make reasons specific to the user's heuristics, not generic.
         """
     
     def _parse_ai_response(self, response_text: str) -> List[Dict]:
@@ -147,34 +160,97 @@ class AIFilter:
         
         # Simple keyword matching
         heuristics_lower = heuristics.lower()
+        keywords = [word for word in heuristics_lower.split() if len(word) > 2]  # Filter out short words
         matches = []
         
         for _, row in df.iterrows():
             score = 0
-            reason_parts = []
+            reason_details = []
+            matched_keywords = set()
             
-            # Check name
-            if any(word in row.get('name', '').lower() for word in heuristics_lower.split()):
-                score += 20
-                reason_parts.append("Name matches keywords")
+            # Get all text fields
+            name = str(row.get('name', '')).lower()
+            description = str(row.get('description', '')).lower()
+            industry = str(row.get('industry', '')).lower()
+            stage = str(row.get('stage', '')).lower()
+            location = str(row.get('location', '')).lower()
+            revenue = str(row.get('revenue', '')).lower()
             
-            # Check description
-            if any(word in row.get('description', '').lower() for word in heuristics_lower.split()):
-                score += 30
-                reason_parts.append("Description matches keywords")
+            # Track which keywords matched in which fields
+            field_matches = {
+                'industry': [],
+                'revenue': [],
+                'stage': [],
+                'description': [],
+                'location': [],
+                'name': []
+            }
             
-            # Check industry
-            if any(word in row.get('industry', '').lower() for word in heuristics_lower.split()):
-                score += 25
-                reason_parts.append("Industry matches keywords")
+            # Check each keyword across all fields
+            for keyword in keywords:
+                if keyword in industry:
+                    score += 25
+                    field_matches['industry'].append(keyword)
+                    matched_keywords.add(keyword)
+                
+                if keyword in revenue:
+                    score += 20
+                    field_matches['revenue'].append(keyword)
+                    matched_keywords.add(keyword)
+                
+                if keyword in stage:
+                    score += 15
+                    field_matches['stage'].append(keyword)
+                    matched_keywords.add(keyword)
+                
+                if keyword in description:
+                    score += 15
+                    field_matches['description'].append(keyword)
+                    matched_keywords.add(keyword)
+                
+                if keyword in location:
+                    score += 10
+                    field_matches['location'].append(keyword)
+                    matched_keywords.add(keyword)
+                
+                if keyword in name:
+                    score += 20
+                    field_matches['name'].append(keyword)
+                    matched_keywords.add(keyword)
             
-            if score > 0:
-                matches.append({
-                    'name': row.get('name', 'Unknown'),
-                    'score': score,
-                    'reason': '; '.join(reason_parts)
-                })
+            # Build detailed reason
+            if matched_keywords:
+                for field, kws in field_matches.items():
+                    if kws:
+                        actual_value = str(row.get(field, '')).strip()
+                        if actual_value and actual_value != 'nan' and len(actual_value) > 0:
+                            kw_str = "', '".join(kws[:2])  # Show up to 2 keywords
+                            if field == 'industry':
+                                reason_details.append(f"{field.capitalize()}: '{actual_value}' (matches '{kw_str}')")
+                            elif field == 'revenue':
+                                reason_details.append(f"Revenue: {actual_value}")
+                            elif field == 'stage':
+                                reason_details.append(f"Stage: {actual_value}")
+                            elif field == 'description' and len(reason_details) < 3:
+                                # Include a snippet of description
+                                snippet = actual_value[:80] + '...' if len(actual_value) > 80 else actual_value
+                                reason_details.append(f"Description mentions '{kw_str}'")
+                
+                if not reason_details:
+                    reason_details = ["Matches search keywords"]
+            else:
+                reason_details = ["No strong keyword matches found"]
+                score = 1  # Minimal score
+            
+            # Combine reason parts
+            reason = '; '.join(reason_details[:4])  # Show up to 4 details
+            
+            matches.append({
+                'name': row.get('name', 'Unknown'),
+                'score': min(score, 100),  # Cap at 100
+                'reason': reason if reason else "General match"
+            })
         
-        # Sort and return top N
+        # Sort by score and return top N
         matches.sort(key=lambda x: x['score'], reverse=True)
         return matches[:top_n]
