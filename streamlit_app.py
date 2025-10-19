@@ -16,12 +16,45 @@ def main():
     
     # Initialize components
     config = Config()
-    
-    # Setup API keys if needed
-    if not config.setup_api_keys_ui():
-        st.stop()
-    
     processor = ExcelProcessor()
+    
+    # API Key Configuration Section (at top, prominent)
+    openai_key = config.get_openai_key()
+    
+    if not openai_key:
+        st.warning("⚠️ **OpenAI API Key Required** - Please enter your API key below to enable AI-powered filtering")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            api_key_input = st.text_input(
+                "🔑 Enter your OpenAI API Key",
+                type="password",
+                placeholder="sk-...",
+                help="Get your API key from https://platform.openai.com/api-keys",
+                key="api_key_input"
+            )
+        with col2:
+            if st.button("Save API Key", type="primary"):
+                if api_key_input and api_key_input.startswith('sk-'):
+                    st.session_state['openai_key'] = api_key_input
+                    st.success("✅ API Key saved!")
+                    st.rerun()
+                elif api_key_input:
+                    st.error("❌ Invalid API key format")
+                else:
+                    st.error("❌ Please enter an API key")
+        
+        st.info("💡 **Tip:** Once you enter your API key, you'll be able to use AI-powered filtering")
+        st.divider()
+    else:
+        st.success("✅ OpenAI API Key configured")
+        if st.button("🔄 Change API Key"):
+            if 'openai_key' in st.session_state:
+                del st.session_state['openai_key']
+            st.rerun()
+        st.divider()
+    
+    # Initialize AI Filter (will use fallback if no API key)
     ai_filter = AIFilter(config)
     
     # File upload
@@ -52,19 +85,29 @@ def main():
             # Filter button
             if st.button("🔍 Filter Top 10 Firms", type="primary"):
                 if heuristics.strip():
-                    with st.spinner("Analyzing firms..."):
+                    # Check if API key is available
+                    if not openai_key:
+                        st.warning("⚠️ No API key configured - Using basic keyword matching fallback")
+                    
+                    with st.spinner("Analyzing firms..." if openai_key else "Using keyword matching..."):
                         results = ai_filter.filter_firms(df, heuristics)
                         
-                        st.subheader("🏆 Top 10 Matching Firms")
-                        for i, firm in enumerate(results, 1):
-                            with st.container():
-                                col1, col2 = st.columns([3, 1])
-                                with col1:
-                                    st.markdown(f"**{i}. {firm['name']}**")
-                                    st.markdown(f"📋 **Reason:** {firm['reason']}")
-                                with col2:
-                                    st.markdown(f"**Score: {firm['score']:.1f}%**")
-                                st.divider()
+                        if results:
+                            st.subheader("🏆 Top 10 Matching Firms")
+                            if not openai_key:
+                                st.info("💡 Add an OpenAI API key above for AI-powered filtering with better accuracy")
+                            
+                            for i, firm in enumerate(results, 1):
+                                with st.container():
+                                    col1, col2 = st.columns([3, 1])
+                                    with col1:
+                                        st.markdown(f"**{i}. {firm['name']}**")
+                                        st.markdown(f"📋 **Reason:** {firm['reason']}")
+                                    with col2:
+                                        st.markdown(f"**Score: {firm['score']:.1f}%**")
+                                    st.divider()
+                        else:
+                            st.warning("No matching firms found. Try adjusting your heuristics.")
                 else:
                     st.warning("Please enter heuristics to filter firms")
                     
@@ -73,21 +116,32 @@ def main():
     
     # Sidebar info
     with st.sidebar:
-        st.markdown("### 📋 Instructions")
+        st.markdown("### 📋 How It Works")
         st.markdown("""
-        1. Upload Excel file with firm data
-        2. Enter specific heuristics/criteria
-        3. Get top 10 matching firms with reasons
+        1. **Enter your OpenAI API Key** (at the top)
+        2. **Upload Excel file** with firm data
+        3. **Enter heuristics** describing your criteria
+        4. **Click Filter** to get top 10 matches
         """)
         
-        st.markdown("### 🔧 Supported Excel Columns")
+        st.markdown("### 🔧 Excel File Format")
         st.markdown("""
-        - **name**: Firm name
-        - **description**: Business description
-        - **stage**: Funding stage
-        - **revenue**: Revenue information
-        - **industry**: Industry sector
-        - **location**: Company location
+        Your Excel file should include these columns:
+        
+        - **name** - Firm name
+        - **description** - Business description
+        - **stage** - Funding stage
+        - **revenue** - Revenue info
+        - **industry** - Industry sector
+        - **location** - Company location
+        """)
+        
+        st.markdown("### 🔑 API Key Info")
+        st.markdown("""
+        - Get your key from [OpenAI Platform](https://platform.openai.com/api-keys)
+        - Your key is stored in session only
+        - Never shared or logged
+        - Works without API key (basic matching)
         """)
 
 if __name__ == "__main__":

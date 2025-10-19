@@ -36,15 +36,23 @@ class Config:
     
     def get_openai_key(self) -> Optional[str]:
         """Get OpenAI API key from environment or secrets"""
-        # Priority order: env var > streamlit secrets > user input
-        key = os.getenv('OPENAI_API_KEY')
+        # Priority order: session state > env var > streamlit secrets
+        key = st.session_state.get('openai_key')
+        
+        if not key:
+            key = os.getenv('OPENAI_API_KEY')
         
         if not key and hasattr(self, 'openai_key') and self.openai_key:
             key = self.openai_key
         
-        if not key:
-            # Fallback to session state for user input
-            key = st.session_state.get('openai_key')
+        # Filter out placeholder values
+        if key and (key.startswith('your_') or key == 'your_openai_api_key_here'):
+            return None
+        
+        # Validate key format (OpenAI keys start with 'sk-')
+        if key and not key.startswith('sk-'):
+            self.logger.warning("Invalid API key format")
+            return None
         
         return key
     

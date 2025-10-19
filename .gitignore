@@ -6,3 +6,4 @@ local.db
 .env
 .env.*
 .DS_Store
+.streamlit/secrets.toml
