@@ -4,7 +4,16 @@ Acts as an experienced venture capital analyst
 """
 import logging
 from typing import List, Dict, Any
-import openai
+
+try:
+    import openai
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+    OPENAI_VERSION = int(openai.__version__.split('.')[0])
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OPENAI_VERSION = 0
+    logging.warning("OpenAI module not available. Install with: pip install openai")
 
 
 class VCExpertAgent:
@@ -13,11 +22,22 @@ class VCExpertAgent:
     def __init__(self, config):
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.client = None
         self._setup_openai()
     
     def _setup_openai(self):
         """Initialize OpenAI client"""
-        openai.api_key = self.config.get_openai_key()
+        if OPENAI_AVAILABLE:
+            api_key = self.config.get_openai_key()
+            if api_key:
+                if OPENAI_VERSION >= 1:
+                    # New API (OpenAI 1.0+)
+                    self.client = OpenAI(api_key=api_key)
+                else:
+                    # Old API (OpenAI 0.x)
+                    openai.api_key = api_key
+        else:
+            self.logger.warning("OpenAI not available - install with: pip install openai")
     
     def analyze_firms(self, firms: List[Dict], criteria: str, top_n: int = 10) -> List[Dict[str, Any]]:
         """
@@ -31,28 +51,55 @@ class VCExpertAgent:
         Returns:
             List of analyzed firms with expert reasoning
         """
+        # Check if OpenAI is available
+        if not OPENAI_AVAILABLE:
+            raise ImportError("OpenAI module not installed. Install with: pip install openai")
+        
+        # Check if API key is configured
+        if not self.config.get_openai_key():
+            raise ValueError("OpenAI API key not configured")
+        
         try:
             # Build expert analysis prompt
             prompt = self._build_expert_prompt(firms, criteria)
             
             # Get analysis from AI with VC context
-            response = openai.ChatCompletion.create(
-                model=self.config.get_ai_model(),
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self._get_vc_expert_system_prompt()
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                max_tokens=3000,
-                temperature=0.4  # Balanced for analytical consistency
-            )
-            
-            result_text = response.choices[0].message.content
+            if OPENAI_VERSION >= 1:
+                # New API (OpenAI 1.0+)
+                response = self.client.chat.completions.create(
+                    model=self.config.get_ai_model(),
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self._get_vc_expert_system_prompt()
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    max_tokens=3000,
+                    temperature=0.4
+                )
+                result_text = response.choices[0].message.content
+            else:
+                # Old API (OpenAI 0.x)
+                response = openai.ChatCompletion.create(
+                    model=self.config.get_ai_model(),
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self._get_vc_expert_system_prompt()
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    max_tokens=3000,
+                    temperature=0.4
+                )
+                result_text = response.choices[0].message.content
             
             # Parse and structure the response
             return self._parse_expert_analysis(result_text, top_n)
@@ -166,6 +213,6 @@ Focus on investment merit, not just keyword matching. Explain like a VC analyst.
             raise
     
     def is_available(self) -> bool:
-        """Check if VC expert agent can be used (requires API key)"""
-        return bool(self.config.get_openai_key())
+        """Check if VC expert agent can be used (requires API key and OpenAI module)"""
+        return OPENAI_AVAILABLE and bool(self.config.get_openai_key())
 

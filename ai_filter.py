@@ -42,15 +42,34 @@ class AIFilter:
             # Prepare firm data for VC expert analysis
             firm_data = self._prepare_firm_data(df)
             
+            # Check if VC Expert is available
+            if not self.vc_expert.is_available():
+                self.logger.warning("VC Expert Agent not available - using fallback")
+                return self._fallback_filter(df, heuristics, top_n)
+            
             # Use VC Expert Agent for professional analysis
             self.logger.info("Using VC Expert Agent for analysis")
             expert_results = self.vc_expert.analyze_firms(firm_data, heuristics, top_n)
+            self.logger.info(f"VC Expert analysis complete - {len(expert_results)} results")
             
             return expert_results
             
+        except ImportError as e:
+            self.logger.error(f"VC Expert Agent missing dependency: {str(e)}")
+            self.logger.info("Falling back to keyword matching")
+            print(f"❌ VC EXPERT ERROR (Import): {str(e)}")  # Console output
+            return self._fallback_filter(df, heuristics, top_n)
+        except ValueError as e:
+            self.logger.error(f"VC Expert Agent configuration issue: {str(e)}")
+            self.logger.info("Falling back to keyword matching")
+            print(f"❌ VC EXPERT ERROR (Config): {str(e)}")  # Console output
+            return self._fallback_filter(df, heuristics, top_n)
         except Exception as e:
             self.logger.error(f"Error in VC Expert analysis: {str(e)}")
             self.logger.info("Falling back to keyword matching")
+            print(f"❌ VC EXPERT ERROR: {type(e).__name__}: {str(e)}")  # Console output
+            import traceback
+            traceback.print_exc()  # Full error trace
             # Return fallback with error info
             return self._fallback_filter(df, heuristics, top_n)
     

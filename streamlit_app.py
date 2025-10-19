@@ -203,14 +203,49 @@ def main():
                     
                     with st.spinner("VC Expert analyzing firms..." if openai_key else "Matching keywords..."):
                         try:
+                            # Debug: Check if VC Expert is available
+                            vc_available = ai_filter.vc_expert.is_available() if openai_key else False
+                            
+                            if openai_key and not vc_available:
+                                st.warning("⚠️ VC Expert Agent unavailable - OpenAI package may not be installed. Using keyword matching instead.")
+                                st.caption("Install with: `pip install openai` and restart the app")
+                            
+                            # Store initial state to detect fallback
+                            expected_vc_mode = openai_key and vc_available
+                            
                             results = ai_filter.filter_firms(df, heuristics)
+                            
+                            # Check if results look like fallback (keyword matching)
+                            used_fallback = False
+                            if results and len(results) > 0:
+                                # Detect fallback by checking if reason is generic
+                                first_reason = results[0].get('reason', '')
+                                if 'mentions' in first_reason.lower() and len(first_reason) < 100:
+                                    used_fallback = True
                             
                             if results and len(results) > 0:
                                 st.subheader("🏆 Top Matching Firms")
                                 
-                                # Show filtering method used
-                                if openai_key:
+                                # Show ACTUAL filtering method used (detect fallback)
+                                if expected_vc_mode and not used_fallback:
                                     st.success("✨ **VC Expert Analysis Complete** - Results analyzed by AI with venture capital expertise")
+                                elif expected_vc_mode and used_fallback:
+                                    st.error("❌ **VC Expert Failed** - Fell back to keyword matching")
+                                    st.warning("**Possible reasons:** Invalid API key, no OpenAI credits, rate limit, or API error")
+                                    with st.expander("🔍 Troubleshooting"):
+                                        st.markdown("""
+                                        **Check these:**
+                                        1. Is your API key valid? (starts with `sk-`)
+                                        2. Do you have credits? Check: https://platform.openai.com/usage
+                                        3. Check terminal/console for error messages
+                                        4. Try generating a new API key
+                                        5. Verify your OpenAI account is active
+                                        
+                                        **Test your API key:** https://platform.openai.com/playground
+                                        """)
+                                elif openai_key and not vc_available:
+                                    st.warning("⚠️ **Keyword Matching Mode** - VC Expert unavailable (OpenAI not installed)")
+                                    st.info("💡 Install OpenAI: `pip install openai` then restart app for professional VC analysis")
                                 else:
                                     st.info("💡 **Tip:** Add an OpenAI API key above for VC Expert analysis with professional investment reasoning")
                                 
