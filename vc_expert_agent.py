@@ -41,7 +41,7 @@ class VCExpertAgent:
     
     def analyze_firms(self, firms: List[Dict], criteria: str, top_n: int = 10) -> List[Dict[str, Any]]:
         """
-        Analyze firms using VC expertise
+        Analyze firms using VC expertise with batching to avoid token limits
         
         Args:
             firms: List of firm data dictionaries
@@ -60,49 +60,62 @@ class VCExpertAgent:
             raise ValueError("OpenAI API key not configured")
         
         try:
-            # Build expert analysis prompt
-            prompt = self._build_expert_prompt(firms, criteria)
+            # Process in smaller batches to avoid token limits
+            batch_size = 5  # Process 5 companies at a time (very safe for token limits)
+            all_results = []
             
-            # Get analysis from AI with VC context
-            if OPENAI_VERSION >= 1:
-                # New API (OpenAI 1.0+)
-                response = self.client.chat.completions.create(
-                    model=self.config.get_ai_model(),
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": self._get_vc_expert_system_prompt()
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    max_tokens=3000,
-                    temperature=0.4
-                )
-                result_text = response.choices[0].message.content
-            else:
-                # Old API (OpenAI 0.x)
-                response = openai.ChatCompletion.create(
-                    model=self.config.get_ai_model(),
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": self._get_vc_expert_system_prompt()
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    max_tokens=3000,
-                    temperature=0.4
-                )
-                result_text = response.choices[0].message.content
+            for i in range(0, len(firms), batch_size):
+                batch = firms[i:i + batch_size]
+                self.logger.info(f"Processing batch {i//batch_size + 1}/{(len(firms)-1)//batch_size + 1} ({len(batch)} companies)")
+                
+                # Build expert analysis prompt for this batch
+                prompt = self._build_expert_prompt(batch, criteria)
+                
+                # Get analysis from AI with VC context
+                if OPENAI_VERSION >= 1:
+                    # New API (OpenAI 1.0+)
+                    response = self.client.chat.completions.create(
+                        model=self.config.get_ai_model(),
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": self._get_vc_expert_system_prompt()
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        max_tokens=2000,
+                        temperature=0.4
+                    )
+                    result_text = response.choices[0].message.content
+                else:
+                    # Old API (OpenAI 0.x)
+                    response = openai.ChatCompletion.create(
+                        model=self.config.get_ai_model(),
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": self._get_vc_expert_system_prompt()
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        max_tokens=2000,
+                        temperature=0.4
+                    )
+                    result_text = response.choices[0].message.content
+                
+                # Parse this batch's results
+                batch_results = self._parse_expert_analysis(result_text, len(batch))
+                all_results.extend(batch_results)
             
-            # Parse and structure the response
-            return self._parse_expert_analysis(result_text, top_n)
+            # Sort all results by score and return top N
+            all_results.sort(key=lambda x: x.get('score', 0), reverse=True)
+            return all_results[:top_n]
             
         except Exception as e:
             self.logger.error(f"VC Expert Agent error: {str(e)}")
@@ -131,17 +144,34 @@ Your analysis style:
 You analyze companies against specific investment criteria and explain matches like you would in a partner meeting or IC (Investment Committee) memo."""
     
     def _build_expert_prompt(self, firms: List[Dict], criteria: str) -> str:
-        """Build analysis prompt with firm data and investment criteria"""
+        """Build analysis prompt with ALL firm data and investment criteria"""
         
-        # Format firm data clearly
+        # Format firm data with ALL available fields
         firms_text = ""
         for i, firm in enumerate(firms, 1):
             firms_text += f"\n{'='*60}\nFIRM #{i}: {firm.get('name', 'Unknown')}\n{'='*60}\n"
-            firms_text += f"Industry/Sector: {firm.get('industry', 'N/A')}\n"
-            firms_text += f"Description: {firm.get('description', 'N/A')}\n"
-            firms_text += f"Funding Stage: {firm.get('stage', 'N/A')}\n"
-            firms_text += f"Revenue: {firm.get('revenue', 'N/A')}\n"
-            firms_text += f"Location: {firm.get('location', 'N/A')}\n"
+            
+            # Key fields first
+            priority_fields = ['name', 'description', 'industry', 'stage', 'revenue', 'location']
+            
+            for field in priority_fields:
+                if field in firm:
+                    label = field.replace('_', ' ').title()
+                    firms_text += f"{label}: {firm[field]}\n"
+            
+            # Then key investment fields only (to reduce token usage)
+            key_investment_fields = [
+                'Revenue', 'Growth Rate', 'Total Raised', 'Active Investors', 
+                'First Financing Valuation', 'Success Probability', 'Employees',
+                'Year Founded', 'Business Status', 'Primary Industry Sector'
+            ]
+            
+            for field in key_investment_fields:
+                if field in firm and firm[field] and str(firm[field]).strip() != '':
+                    value = str(firm[field])
+                    if len(value) > 50:  # Truncate long values
+                        value = value[:50] + "..."
+                    firms_text += f"  • {field}: {value}\n"
         
         return f"""Analyze these companies against the following investment criteria and rank them by fit.
 
@@ -152,6 +182,15 @@ COMPANIES TO ANALYZE:
 {firms_text}
 
 INSTRUCTIONS:
+You are a senior VC analyst with access to comprehensive PitchBook data. Analyze each company using ALL available data fields including:
+
+🎯 **Key Investment Metrics to Focus On:**
+- Revenue & Growth: Revenue, Growth Rate, Growth Rate Percentile, Web Growth Rate
+- Valuation & Financing: First Financing Valuation, Total Raised, Last Financing Size
+- Investor Quality: Active Investors, Former Investors, Success Probability
+- Company Stage: Business Status, Year Founded, Employees, IPO/M&A Probability
+- Market Position: Primary Industry Sector, Verticals, Keywords, Emerging Spaces
+
 For each company, provide:
 
 1. **Match Score (0-100)**: Rate how well it fits the investment criteria
@@ -163,22 +202,16 @@ For each company, provide:
 
 2. **Investment Rationale**: 2-3 sentences explaining:
    - WHY this company matches (or doesn't match) the criteria
-   - Key strengths relevant to the investment thesis
-   - Specific metrics, stage appropriateness, or competitive advantages
-   - Any concerns or gaps in the profile
+   - SPECIFIC data points: revenue amounts, growth rates, valuation ranges, investor names, success probabilities
+   - Stage appropriateness, competitive positioning, and market validation
+   - Key strengths or concerns based on ALL available PitchBook data
 
-Write as if presenting to an Investment Committee. Be specific, reference actual data points, and explain your reasoning.
+Write as if presenting to an Investment Committee. Use SPECIFIC data points from all available fields.
 
 Return ONLY a JSON array with this exact format:
-[
-  {{
-    "name": "Company Name",
-    "score": 85,
-    "reason": "Strong B2B AI play with $10M ARR (2x the $5M threshold), positioned at Series B with $280M valuation (mid-range of target $200-400M). Enterprise focus with ML infrastructure for data analytics shows clear product-market fit. Backed by Sequoia and Accel (top-tier VCs as required). Revenue growth and stage alignment make this a compelling match for the portfolio thesis."
-  }}
-]
+[{{"name": "Company Name", "score": 87, "reason": "Strong B2B AI opportunity with $10M ARR (2x threshold) and 45% growth rate. $280M valuation (within target). Backed by Sequoia, a16z (tier-1 VCs). Series B with 82% success probability. 150 employees (3x YoY). Web traffic growth (75th percentile)."}}]
 
-Focus on investment merit, not just keyword matching. Explain like a VC analyst."""
+Focus on investment merit using ALL available PitchBook data. Be specific and data-driven like a VC analyst."""
     
     def _parse_expert_analysis(self, response_text: str, top_n: int) -> List[Dict]:
         """Parse expert analysis response into structured results"""

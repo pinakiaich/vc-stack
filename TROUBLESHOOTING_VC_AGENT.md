@@ -383,3 +383,4 @@ Should print: `VC Expert available: True`
 
 **Summary:** The most common issue is either no API key entered or OpenAI package not installed. Follow the steps above to fix it! 🚀
 
+

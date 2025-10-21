@@ -58,34 +58,50 @@ class AIFilter:
             self.logger.error(f"VC Expert Agent missing dependency: {str(e)}")
             self.logger.info("Falling back to keyword matching")
             print(f"❌ VC EXPERT ERROR (Import): {str(e)}")  # Console output
+            # Store error for UI display
+            import streamlit as st
+            st.session_state['vc_expert_error'] = f"Import Error: {str(e)}"
             return self._fallback_filter(df, heuristics, top_n)
         except ValueError as e:
             self.logger.error(f"VC Expert Agent configuration issue: {str(e)}")
             self.logger.info("Falling back to keyword matching")
             print(f"❌ VC EXPERT ERROR (Config): {str(e)}")  # Console output
+            import streamlit as st
+            st.session_state['vc_expert_error'] = f"Configuration Error: {str(e)}"
             return self._fallback_filter(df, heuristics, top_n)
         except Exception as e:
             self.logger.error(f"Error in VC Expert analysis: {str(e)}")
             self.logger.info("Falling back to keyword matching")
-            print(f"❌ VC EXPERT ERROR: {type(e).__name__}: {str(e)}")  # Console output
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            print(f"❌ VC EXPERT ERROR: {error_msg}")  # Console output
             import traceback
             traceback.print_exc()  # Full error trace
+            # Store error for UI display
+            import streamlit as st
+            st.session_state['vc_expert_error'] = error_msg
             # Return fallback with error info
             return self._fallback_filter(df, heuristics, top_n)
     
     def _prepare_firm_data(self, df: pd.DataFrame) -> List[Dict[str, str]]:
-        """Convert DataFrame to list of firm dictionaries"""
+        """Convert DataFrame to list of firm dictionaries with ALL available columns"""
         firms = []
         
         for _, row in df.iterrows():
-            firm = {
-                'name': str(row.get('name', 'Unknown')),
-                'description': str(row.get('description', 'No description')),
-                'stage': str(row.get('stage', 'Unknown')),
-                'revenue': str(row.get('revenue', 'Unknown')),
-                'industry': str(row.get('industry', 'Unknown')),
-                'location': str(row.get('location', 'Unknown'))
-            }
+            firm = {}
+            
+            # Add ALL columns from the dataframe
+            for col in df.columns:
+                value = str(row.get(col, ''))
+                # Only include if not empty and not just whitespace
+                if value and value.strip() and value != 'nan':
+                    firm[col] = value
+            
+            # Ensure critical fields exist even if empty
+            if 'name' not in firm:
+                firm['name'] = 'Unknown'
+            if 'description' not in firm:
+                firm['description'] = 'No description available'
+                
             firms.append(firm)
         
         return firms

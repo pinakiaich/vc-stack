@@ -48,24 +48,42 @@ class ExcelProcessor:
     def _detect_header_row(self, uploaded_file) -> int:
         """Detect which row contains the actual column headers"""
         try:
-            # Read first 20 rows without headers to inspect
-            df_peek = pd.read_excel(uploaded_file, engine='openpyxl', header=None, nrows=20)
+            # Read first 30 rows without headers to inspect
+            df_peek = pd.read_excel(uploaded_file, engine='openpyxl', header=None, nrows=30)
             
             # Look for common company data column names
-            company_keywords = ['name', 'company', 'firm', 'organization', 'business']
-            metadata_keywords = ['downloaded', 'created', 'search', 'criteria', 'link', 'export']
+            company_keywords = ['name', 'company', 'firm', 'organization', 'business', 'companies']
+            metadata_keywords = ['downloaded', 'created', 'search', 'criteria', 'link', 'export', 'report']
+            
+            best_header_row = 0
+            max_data_columns = 0
             
             for idx, row in df_peek.iterrows():
-                row_str = ' '.join([str(cell).lower() for cell in row if pd.notna(cell)])
+                # Convert row to strings
+                row_values = [str(cell).lower().strip() for cell in row if pd.notna(cell) and str(cell).strip()]
+                row_str = ' '.join(row_values)
                 
-                # Check if this row contains company column headers
-                if any(keyword in row_str for keyword in company_keywords):
-                    self.logger.info(f"Detected header row at index {idx}")
-                    return idx
-                
-                # Skip metadata rows
+                # Skip obvious metadata rows
                 if any(keyword in row_str for keyword in metadata_keywords):
                     continue
+                
+                # Count how many cells look like column headers (not data)
+                header_like = 0
+                for val in row_values:
+                    # Headers are usually short, descriptive, not numbers
+                    if len(val) < 50 and not val.replace('.', '').replace('-', '').replace('%', '').replace('$', '').isdigit():
+                        header_like += 1
+                
+                # If this row has lots of text cells (potential headers) and contains company keywords
+                if header_like >= 5 and any(keyword in row_str for keyword in company_keywords):
+                    if header_like > max_data_columns:
+                        max_data_columns = header_like
+                        best_header_row = idx
+                        self.logger.info(f"Found potential header row at index {idx} with {header_like} columns")
+            
+            if best_header_row > 0:
+                self.logger.info(f"Using detected header row at index {best_header_row}")
+                return best_header_row
             
             return 0  # Default to first row
             
@@ -106,12 +124,33 @@ class ExcelProcessor:
         if 'name' not in df.columns or len(df) == 0:
             return df
         
-        # Remove rows with empty, very short, or 'nan' names
+        # Check if this looks like actual empty data or just string conversion issues
+        # Count how many would be removed
+        potentially_empty = (
+            (df['name'] == '') | 
+            (df['name'] == 'nan') | 
+            (df['name'] == 'None') |
+            (df['name'].str.lower() == 'nan') |
+            (df['name'].str.len() < 2)
+        )
+        
+        empty_count = potentially_empty.sum()
+        
+        # If more than 50% would be removed, something is wrong with column detection
+        if empty_count > len(df) * 0.5:
+            self.logger.warning(f"Would remove {empty_count}/{len(df)} rows - column mapping may be wrong!")
+            self.logger.warning("Skipping name cleaning to preserve data")
+            return df
+        
+        # Remove only clearly invalid rows
         mask_valid = (
             (df['name'] != '') & 
-            (df['name'] != 'nan') & 
-            (df['name'].str.len() >= 3) &
-            (~df['name'].str.match(r'^\d+[-_]\d+$', na=False))  # Remove ID patterns
+            (df['name'] != 'nan') &
+            (df['name'] != 'None') &
+            (df['name'].str.lower() != 'nan') &
+            (df['name'].str.len() >= 2) &  # Allow 2+ char names
+            (~df['name'].str.match(r'^\d+[-_]\d+$', na=False)) &  # Remove ID patterns
+            (~df['name'].str.match(r'^unnamed', na=False, case=False))  # Remove "Unnamed: X"
         )
         
         df_cleaned = df[mask_valid].reset_index(drop=True)
@@ -122,20 +161,57 @@ class ExcelProcessor:
         
         return df_cleaned
     
+    def _clean_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean and standardize column names, handling duplicates"""
+        # Convert to lowercase and strip whitespace
+        df.columns = df.columns.str.lower().str.strip()
+        
+        # Remove special characters and replace spaces/underscores with single space
+        import re
+        cleaned_columns = []
+        for col in df.columns:
+            # Remove special chars, keep only alphanumeric and spaces
+            cleaned = re.sub(r'[^\w\s]', ' ', col)
+            # Replace multiple spaces/underscores with single space
+            cleaned = re.sub(r'[\s_]+', ' ', cleaned)
+            # Strip and convert to lowercase
+            cleaned = cleaned.strip().lower()
+            cleaned_columns.append(cleaned)
+        
+        # Handle duplicate column names by adding suffix
+        seen = {}
+        unique_columns = []
+        for col in cleaned_columns:
+            if col in seen:
+                seen[col] += 1
+                unique_col = f"{col} {seen[col]}"
+                unique_columns.append(unique_col)
+                self.logger.warning(f"Duplicate column '{col}' renamed to '{unique_col}'")
+            else:
+                seen[col] = 0
+                unique_columns.append(col)
+        
+        df.columns = unique_columns
+        
+        # Log column name mappings
+        self.logger.info(f"Cleaned {len(df.columns)} column names (duplicates handled)")
+        
+        return df
+    
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and standardize DataFrame"""
         # Remove empty rows
         df = df.dropna(how='all')
         
-        # Standardize column names
-        df.columns = df.columns.str.lower().str.strip()
+        # Clean column names
+        df = self._clean_column_names(df)
         
-        # Fill missing values
-        df = df.fillna('')
-        
-        # Convert to string for consistency
+        # Convert to string first (this converts NaN to 'nan')
         for col in df.columns:
             df[col] = df[col].astype(str)
+        
+        # Now replace 'nan' strings with empty strings
+        df = df.replace(['nan', 'None', 'NaN', 'NAN'], '')
         
         return df
     
@@ -143,25 +219,35 @@ class ExcelProcessor:
         """Add missing required columns with default values"""
         # Define required columns with alternative names to look for
         column_mappings = {
-            'name': ['name', 'company', 'company name', 'firm', 'organization', 'business name', 'company_name'],
-            'description': ['description', 'desc', 'about', 'summary', 'overview', 'business description'],
-            'stage': ['stage', 'funding stage', 'round', 'series', 'funding round'],
-            'revenue': ['revenue', 'arr', 'annual revenue', 'sales', 'mrr'],
-            'industry': ['industry', 'sector', 'vertical', 'category', 'market'],
-            'location': ['location', 'hq', 'headquarters', 'city', 'region', 'country']
+            'name': ['name', 'company', 'companies', 'company name', 'firm', 'organization', 'business name', 'company_name', 'firm name', 'portfolio company'],
+            'description': ['description', 'desc', 'about', 'summary', 'overview', 'business description', 'company description'],
+            'stage': ['stage', 'funding stage', 'round', 'series', 'funding round', 'investment stage'],
+            'revenue': ['revenue', 'arr', 'annual revenue', 'sales', 'mrr', 'total revenue'],
+            'industry': ['industry', 'sector', 'vertical', 'category', 'market', 'primary industry'],
+            'location': ['location', 'hq', 'headquarters', 'city', 'region', 'country', 'geography']
         }
         
         for target_col, alternatives in column_mappings.items():
             if target_col not in df.columns:
                 # Look for alternative column names
                 found = False
+                best_match = None
+                best_filled_count = 0
+                
+                # Find ALL matching columns and pick the one with most data
                 for alt in alternatives:
                     matching_cols = [col for col in df.columns if alt in col.lower()]
-                    if matching_cols:
-                        df[target_col] = df[matching_cols[0]]
-                        self.logger.info(f"Mapped '{matching_cols[0]}' to '{target_col}'")
-                        found = True
-                        break
+                    for match_col in matching_cols:
+                        # Count how many non-empty values
+                        filled = (df[match_col] != '').sum()
+                        if filled > best_filled_count:
+                            best_filled_count = filled
+                            best_match = match_col
+                
+                if best_match:
+                    df[target_col] = df[best_match]
+                    self.logger.info(f"Mapped '{best_match}' to '{target_col}' ({best_filled_count}/{len(df)} filled)")
+                    found = True
                 
                 if not found:
                     # Try fuzzy matching as fallback
@@ -170,13 +256,8 @@ class ExcelProcessor:
                         df[target_col] = df[similar_col]
                         self.logger.info(f"Fuzzy matched '{similar_col}' to '{target_col}'")
                     else:
-                        # Last resort: use first non-empty column for 'name'
-                        if target_col == 'name' and len(df.columns) > 0:
-                            df[target_col] = df[df.columns[0]]
-                            self.logger.warning(f"Using first column '{df.columns[0]}' as 'name'")
-                        else:
-                            df[target_col] = ''
-                            self.logger.warning(f"No match found for '{target_col}', using empty string")
+                        df[target_col] = ''
+                        self.logger.warning(f"No match found for '{target_col}', using empty string")
         
         return df
     
