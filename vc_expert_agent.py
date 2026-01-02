@@ -3,7 +3,7 @@ VC Expert Agent - Intelligent analysis of companies against investment criteria
 Acts as an experienced venture capital analyst
 """
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 try:
     import openai
@@ -19,10 +19,18 @@ except ImportError:
 class VCExpertAgent:
     """AI agent with VC expertise for analyzing investment opportunities"""
     
-    def __init__(self, config):
+    def __init__(self, config, document_store=None):
+        """
+        Initialize VC Expert Agent
+        
+        Args:
+            config: Configuration object
+            document_store: Optional DocumentStore for RAG (Retrieval-Augmented Generation)
+        """
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.client = None
+        self.document_store = document_store
         self._setup_openai()
     
     def _setup_openai(self):
@@ -146,6 +154,17 @@ You analyze companies against specific investment criteria and explain matches l
     def _build_expert_prompt(self, firms: List[Dict], criteria: str) -> str:
         """Build analysis prompt with ALL firm data and investment criteria"""
         
+        # Retrieve relevant document context if RAG is enabled
+        rag_context = ""
+        if self.document_store:
+            try:
+                relevant_chunks = self.document_store.retrieve(criteria, top_k=5, min_similarity=0.3)
+                if relevant_chunks:
+                    rag_context = self.document_store.format_context(relevant_chunks, max_chars=1500)
+                    self.logger.info(f"RAG: Retrieved {len(relevant_chunks)} relevant document chunks")
+            except Exception as e:
+                self.logger.warning(f"RAG retrieval failed: {e}, proceeding without document context")
+        
         # Format firm data with ALL available fields
         firms_text = ""
         for i, firm in enumerate(firms, 1):
@@ -173,7 +192,21 @@ You analyze companies against specific investment criteria and explain matches l
                         value = value[:50] + "..."
                     firms_text += f"  • {field}: {value}\n"
         
-        return f"""Analyze these companies against the following investment criteria and rank them by fit.
+        # Build prompt with optional RAG context
+        prompt_start = """Analyze these companies against the following investment criteria and rank them by fit."""
+        
+        if rag_context:
+            prompt_start += f"""
+
+📚 **RELEVANT VC BEST PRACTICES & GUIDELINES:**
+The following context from internal documentation and best practices should guide your analysis:
+
+{rag_context}
+
+---
+"""
+        
+        return f"""{prompt_start}
 
 INVESTMENT CRITERIA:
 {criteria}

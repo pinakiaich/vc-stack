@@ -5,15 +5,60 @@ import json
 import logging
 from config import Config
 from vc_expert_agent import VCExpertAgent
+from hybrid_filter import HybridFilter
+from cache_service import CacheService
 
 class AIFilter:
     """AI-powered firm filtering using heuristics"""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, use_hybrid_filter: bool = True):
+        """
+        Initialize AI filter
+        
+        Args:
+            config: Configuration object
+            use_hybrid_filter: If True, use hybrid filter (vector search + LLM).
+                              If False, use original VC Expert only (slower)
+        """
         self.config = config
         self.logger = logging.getLogger(__name__)
         self._setup_openai()
-        # Initialize VC expert agent
+        
+        # Initialize cache service
+        self.cache_service = None
+        if config.is_cache_enabled():
+            try:
+                self.cache_service = CacheService(
+                    cache_dir=config.get_cache_dir(),
+                    enable_file_persistence=True,
+                    default_ttl_hours=config.get_cache_ttl_hours()
+                )
+                self.logger.info("Cache service initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize cache service: {e}")
+        
+        # Try to initialize hybrid filter (faster, more accurate)
+        self.use_hybrid = use_hybrid_filter
+        if use_hybrid_filter:
+            try:
+                self.hybrid_filter = HybridFilter(
+                    config, 
+                    use_openai_embeddings=False,
+                    cache_service=self.cache_service
+                )
+                if self.hybrid_filter.is_vector_search_available():
+                    self.logger.info("Using hybrid filter (vector search + LLM)")
+                else:
+                    self.logger.warning("Hybrid filter not available, falling back to VC Expert")
+                    self.use_hybrid = False
+            except Exception as e:
+                self.logger.warning(f"Hybrid filter initialization failed: {e}, using VC Expert")
+                self.use_hybrid = False
+                self.hybrid_filter = None
+        else:
+            self.hybrid_filter = None
+        
+        # Always initialize VC expert agent as fallback (even if using hybrid)
         self.vc_expert = VCExpertAgent(config)
     
     def _setup_openai(self):
@@ -39,16 +84,35 @@ class AIFilter:
             return self._fallback_filter(df, heuristics, top_n)
         
         try:
-            # Prepare firm data for VC expert analysis
+            # Prepare firm data for analysis
             firm_data = self._prepare_firm_data(df)
             
-            # Check if VC Expert is available
+            # Use hybrid filter if available (much faster and more accurate)
+            if self.use_hybrid and self.hybrid_filter:
+                self.logger.info("Using hybrid filter (vector search + async LLM)")
+                try:
+                    results = self.hybrid_filter.filter_firms(
+                        firm_data, 
+                        heuristics, 
+                        top_n=top_n,
+                        use_vector_search=True
+                    )
+                    self.logger.info(f"Hybrid filter analysis complete - {len(results)} results")
+                    return results
+                except Exception as e:
+                    self.logger.warning(f"Hybrid filter failed: {e}, falling back to VC Expert")
+                    # Fall through to VC Expert
+            
+            # Fallback: Use original VC Expert Agent
+            if not hasattr(self, 'vc_expert'):
+                self.vc_expert = VCExpertAgent(self.config)
+            
             if not self.vc_expert.is_available():
                 self.logger.warning("VC Expert Agent not available - using fallback")
                 return self._fallback_filter(df, heuristics, top_n)
             
             # Use VC Expert Agent for professional analysis
-            self.logger.info("Using VC Expert Agent for analysis")
+            self.logger.info("Using VC Expert Agent for analysis (original method)")
             expert_results = self.vc_expert.analyze_firms(firm_data, heuristics, top_n)
             self.logger.info(f"VC Expert analysis complete - {len(expert_results)} results")
             

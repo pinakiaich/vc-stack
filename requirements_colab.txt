@@ -11,6 +11,20 @@ google-generativeai>=0.3.0
 numpy>=1.24.0
 python-dotenv>=1.0.0
 
+# Vector embeddings & semantic search
+sentence-transformers>=2.2.0
+torch>=2.0.0  # Required by sentence-transformers
+transformers>=4.30.0  # Required by sentence-transformers
+
+# Document processing for RAG
+PyPDF2>=3.0.0  # PDF processing
+markdown>=3.4.0  # Markdown processing (optional)
+
+# Web scraping for URL ingestion
+requests>=2.31.0  # HTTP requests
+beautifulsoup4>=4.12.0  # HTML parsing
+lxml>=4.9.0  # HTML parser (faster than default)
+
 # Optional: For enhanced Excel support
 xlrd>=2.0.1
 
