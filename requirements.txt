@@ -25,3 +25,6 @@ markdown>=3.4.0  # Markdown processing (optional)
 requests>=2.31.0  # HTTP requests
 beautifulsoup4>=4.12.0  # HTML parsing
 lxml>=4.9.0  # HTML parser (faster than default)
+
+# Internet search for company research
+duckduckgo-search>=4.0.0  # Free internet search (optional)

@@ -7,6 +7,8 @@ from config import Config
 from document_ingestion import DocumentIngestionService
 from document_store import DocumentStore
 from embedding_service import EmbeddingService
+from company_research_agent import CompanyResearchAgent
+import json
 
 st.set_page_config(
     page_title="VC Firm Filter",
@@ -584,6 +586,7 @@ def main():
                                     if keywords and not openai_key:
                                         st.caption(f"🔍 Searching for keywords: {', '.join(keywords)}")
                                     
+                                    # Display results
                                     for i, firm in enumerate(results, 1):
                                         with st.container():
                                             col1, col2 = st.columns([3, 1])
@@ -593,6 +596,65 @@ def main():
                                             with col2:
                                                 st.markdown(f"**Score: {firm['score']:.1f}%**")
                                             st.divider()
+                                    
+                                    # Auto-create Deal records for top 10 firms
+                                    try:
+                                        # Limit to top 10
+                                        top_results = results[:10]
+                                        
+                                        # Create a helper function to find company data in DataFrame
+                                        def get_company_data_from_df(company_name: str, df: pd.DataFrame) -> dict:
+                                            """Extract company data from DataFrame by name"""
+                                            # Try exact match first
+                                            match = df[df['name'].str.strip().str.lower() == company_name.strip().lower()]
+                                            if match.empty:
+                                                # Try partial match
+                                                match = df[df['name'].str.strip().str.lower().str.contains(company_name.strip().lower(), na=False, regex=False)]
+                                            if not match.empty:
+                                                row = match.iloc[0]
+                                                return {
+                                                    'industry': row.get('industry', ''),
+                                                    'sector': row.get('industry', ''),  # Use industry as sector
+                                                    'stage': row.get('stage', ''),
+                                                    'description': row.get('description', ''),
+                                                    'location': row.get('location', ''),
+                                                    'revenue': row.get('revenue', ''),
+                                                }
+                                            return {}
+                                        
+                                        # Auto-create deals
+                                        created_deals = []
+                                        for firm in top_results:
+                                            company_data = get_company_data_from_df(firm['name'], df)
+                                            
+                                            deal_payload = {
+                                                "name": firm['name'],
+                                                "source": "auto-created_from_filter",
+                                                "owner": None,
+                                                "sector": company_data.get('sector', company_data.get('industry', '')),
+                                                "stage": company_data.get('stage', ''),
+                                                "status": "active"
+                                            }
+                                            
+                                            try:
+                                                response = requests.post(
+                                                    f"{API_BASE_URL}/v2/deals",
+                                                    json=deal_payload,
+                                                    timeout=5
+                                                )
+                                                if response.status_code == 200:
+                                                    deal = response.json()
+                                                    created_deals.append(deal)
+                                            except requests.exceptions.RequestException:
+                                                pass  # Skip if API not available
+                                        
+                                        if created_deals:
+                                            st.success(f"✅ Auto-created {len(created_deals)} deals in Deal Workspace. Check sidebar to select and research.")
+                                            # Store created deal IDs in session state for reference
+                                            st.session_state['auto_created_deals'] = [d['id'] for d in created_deals]
+                                    except Exception as e:
+                                        # Silently fail - don't interrupt user flow
+                                        pass
                                 else:
                                     st.warning("⚠️ No results returned. This might be due to:")
                                     st.markdown("""
@@ -614,6 +676,193 @@ def main():
                     
         except Exception as e:
             st.error(f"❌ Error processing file: {str(e)}")
+    
+    # Active Deal Workspace Section (Main Content Area)
+    if st.session_state.get('deal_id') is not None:
+        st.markdown("---")
+        st.markdown("## 💼 Active Deal Workspace")
+        
+        deal_id = st.session_state.deal_id
+        try:
+            # Fetch deal details
+            response = requests.get(f"{API_BASE_URL}/v2/deals/{deal_id}", timeout=5)
+            if response.status_code == 200:
+                deal = response.json()
+                
+                # Display deal metadata
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown(f"**Deal:** {deal['name']}")
+                    st.markdown(f"**Sector:** {deal.get('sector', 'N/A')}")
+                    st.markdown(f"**Stage:** {deal.get('stage', 'N/A')}")
+                with col2:
+                    st.markdown(f"**Owner:** {deal.get('owner', 'N/A')}")
+                    st.markdown(f"**Status:** {deal.get('status', 'active')}")
+                    st.markdown(f"**Source:** {deal.get('source', 'N/A')}")
+                with col3:
+                    st.markdown(f"**Created:** {deal.get('created_at', 'N/A')}")
+                
+                st.divider()
+                
+                # Company Research Section
+                st.markdown("### 🔍 Company Research")
+                
+                # Check if research already exists
+                research_response = requests.get(f"{API_BASE_URL}/v2/deals/{deal_id}/research-findings", timeout=5)
+                existing_research = {}
+                if research_response.status_code == 200:
+                    findings = research_response.json()
+                    # Group findings by category
+                    for finding in findings:
+                        category = finding.get('category', 'general')
+                        if category not in existing_research:
+                            existing_research[category] = []
+                        existing_research[category].append(finding)
+                
+                # Initialize research agent
+                research_agent = CompanyResearchAgent(config)
+                
+                # Research button or display existing research
+                if existing_research:
+                    st.info("✅ Research already conducted. Click 'Refresh Research' to update.")
+                    refresh_research = st.button("🔄 Refresh Research", type="primary")
+                else:
+                    refresh_research = st.button("🔍 Conduct Research", type="primary")
+                
+                if refresh_research:
+                    with st.spinner("🔍 Researching company information from internet..."):
+                        try:
+                            # Prepare additional info from deal
+                            additional_info = {
+                                'industry': deal.get('sector', ''),
+                                'description': '',  # Could be enhanced later
+                            }
+                            
+                            # Conduct research
+                            research_data = research_agent.research_company(deal['name'], additional_info)
+                            
+                            # Save research findings to database
+                            findings_to_save = [
+                                {
+                                    'category': 'company_info',
+                                    'source_type': 'agent_analysis',
+                                    'content': f"Company Name: {research_data.get('company_name', 'N/A')}\nCountry of Incorporation: {research_data.get('country_of_incorporation', 'N/A')}\nIndustry: {research_data.get('industry', 'N/A')}",
+                                    'citation': 'Internet research via Company Research Agent'
+                                },
+                                {
+                                    'category': 'industry_background',
+                                    'source_type': 'agent_analysis',
+                                    'content': research_data.get('industry_background', 'Not available'),
+                                    'citation': 'Internet research via Company Research Agent'
+                                },
+                                {
+                                    'category': 'company_background',
+                                    'source_type': 'agent_analysis',
+                                    'content': research_data.get('company_background', 'Not available'),
+                                    'citation': 'Internet research via Company Research Agent'
+                                },
+                                {
+                                    'category': 'founder_profile',
+                                    'source_type': 'agent_analysis',
+                                    'content': research_data.get('founder_profile', 'Not available'),
+                                    'citation': 'Internet research via Company Research Agent'
+                                },
+                                {
+                                    'category': 'competition',
+                                    'source_type': 'agent_analysis',
+                                    'content': research_data.get('competition', 'Not available'),
+                                    'citation': 'Internet research via Company Research Agent'
+                                },
+                            ]
+                            
+                            # Save each finding
+                            for finding in findings_to_save:
+                                try:
+                                    requests.post(
+                                        f"{API_BASE_URL}/v2/deals/{deal_id}/research-findings",
+                                        json={
+                                            'deal_id': deal_id,
+                                            **finding
+                                        },
+                                        timeout=5
+                                    )
+                                except:
+                                    pass
+                            
+                            # Store in session state for display
+                            st.session_state[f'research_data_{deal_id}'] = research_data
+                            st.success("✅ Research completed!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Research failed: {str(e)}")
+                            st.caption("Make sure OpenAI API key is configured and internet connection is available.")
+                
+                # Display research data (from session state or existing findings)
+                research_data = st.session_state.get(f'research_data_{deal_id}')
+                if not research_data and existing_research:
+                    # Build research_data from existing findings
+                    research_data = {
+                        'company_name': deal['name'],
+                        'country_of_incorporation': '',
+                        'industry': deal.get('sector', ''),
+                        'industry_background': '',
+                        'company_background': '',
+                        'founder_profile': '',
+                        'competition': ''
+                    }
+                    for category, findings in existing_research.items():
+                        if findings:
+                            content = findings[0].get('content', '')
+                            if category == 'industry_background':
+                                research_data['industry_background'] = content
+                            elif category == 'company_background':
+                                research_data['company_background'] = content
+                            elif category == 'founder_profile':
+                                research_data['founder_profile'] = content
+                            elif category == 'competition':
+                                research_data['competition'] = content
+                            elif category == 'company_info':
+                                # Parse company info
+                                for line in content.split('\n'):
+                                    if 'Country of Incorporation:' in line:
+                                        research_data['country_of_incorporation'] = line.split(':', 1)[1].strip()
+                                    elif 'Industry:' in line:
+                                        research_data['industry'] = line.split(':', 1)[1].strip()
+                
+                if research_data:
+                    st.markdown("#### 📊 Research Results")
+                    
+                    # Company Information
+                    with st.expander("🏢 Company Information", expanded=True):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown(f"**Company Name:** {research_data.get('company_name', 'N/A')}")
+                            st.markdown(f"**Country of Incorporation:** {research_data.get('country_of_incorporation', 'N/A')}")
+                        with col2:
+                            st.markdown(f"**Industry:** {research_data.get('industry', 'N/A')}")
+                    
+                    # Industry Background
+                    with st.expander("📈 Industry Background & Growth", expanded=True):
+                        st.markdown(research_data.get('industry_background', 'Not available'))
+                    
+                    # Company Background
+                    with st.expander("🏛️ Company Background", expanded=False):
+                        st.markdown(research_data.get('company_background', 'Not available'))
+                    
+                    # Founder Profile
+                    with st.expander("👤 Founder Profile", expanded=False):
+                        st.markdown(research_data.get('founder_profile', 'Not available'))
+                    
+                    # Competition
+                    with st.expander("⚔️ Competition & Market Landscape", expanded=False):
+                        st.markdown(research_data.get('competition', 'Not available'))
+                    
+            else:
+                st.error(f"❌ Could not fetch deal: {response.status_code}")
+        except requests.exceptions.RequestException:
+            st.info("💡 Start FastAPI backend to view deal details")
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
     
     # Sidebar info
     with st.sidebar:

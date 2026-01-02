@@ -5,7 +5,8 @@ from typing import List, Optional, Dict, Any
 from .core.db import Base, engine, SessionLocal
 from .models import Company, FilterResult, FilterQuery, UserFeedback
 from .models import Deal  # v2 models
-from .schemas_v2 import DealCreate, DealRead
+from .schemas_v2 import DealCreate, DealRead, ResearchFindingCreate, ResearchFindingRead
+from .models import ResearchFinding
 
 app = FastAPI(title="VC Stack API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -199,4 +200,34 @@ def get_deal(deal_id: int, db=Depends(get_db)):
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
     return deal
+
+
+@app.post("/v2/deals/{deal_id}/research-findings", response_model=ResearchFindingRead)
+def create_research_finding(deal_id: int, finding: ResearchFindingCreate, db=Depends(get_db)):
+    """Create a research finding for a deal"""
+    # Verify deal exists
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    
+    # Create research finding
+    finding_data = finding.dict()
+    finding_data['deal_id'] = deal_id
+    db_finding = ResearchFinding(**finding_data)
+    db.add(db_finding)
+    db.commit()
+    db.refresh(db_finding)
+    return db_finding
+
+
+@app.get("/v2/deals/{deal_id}/research-findings", response_model=List[ResearchFindingRead])
+def get_research_findings(deal_id: int, db=Depends(get_db)):
+    """Get all research findings for a deal"""
+    # Verify deal exists
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    
+    findings = db.query(ResearchFinding).filter(ResearchFinding.deal_id == deal_id).order_by(ResearchFinding.created_at.desc()).all()
+    return findings
 
