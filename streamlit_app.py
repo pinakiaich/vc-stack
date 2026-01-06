@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+from datetime import datetime
 from data_processor import ExcelProcessor
 from ai_filter import AIFilter
 from config import Config
@@ -8,6 +9,9 @@ from document_ingestion import DocumentIngestionService
 from document_store import DocumentStore
 from embedding_service import EmbeddingService
 from company_research_agent import CompanyResearchAgent
+from research_validation_agent import ResearchValidationAgent
+from excel_intelligence_agent import ExcelIntelligenceAgent
+from industry_hierarchy_agent import IndustryHierarchyAgent
 import json
 
 st.set_page_config(
@@ -522,151 +526,57 @@ def main():
                                 # Store initial state to detect fallback
                                 expected_vc_mode = openai_key and vc_available
                                 
-                                results = ai_filter.filter_firms(df, heuristics)
+                                # Show progress indicator
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
                                 
-                                # Check if results look like fallback (keyword matching)
-                                used_fallback = False
-                                if results and len(results) > 0:
-                                    # Detect fallback by checking if reason is generic
-                                    first_reason = results[0].get('reason', '')
-                                    if 'mentions' in first_reason.lower() and len(first_reason) < 100:
-                                        used_fallback = True
+                                # Update progress
+                                status_text.text("🔄 Initializing filter...")
+                                progress_bar.progress(10)
                                 
-                                if results and len(results) > 0:
-                                    st.subheader("🏆 Top Matching Firms")
+                                # Filter with progress updates
+                                try:
+                                    status_text.text("🔍 Analyzing companies (this may take a moment)...")
+                                    progress_bar.progress(30)
                                     
-                                    # Show cache statistics if available
-                                    if hasattr(ai_filter, 'cache_service') and ai_filter.cache_service:
-                                        cache_stats = ai_filter.cache_service.get_stats()
-                                        cache_hit = cache_stats['result']['hits'] > 0 and cache_stats['result']['misses'] == 0
-                                        
-                                        if cache_hit:
-                                            st.success("⚡ **Results from cache** - Instant results! (No API calls)")
-                                        else:
-                                            hit_rate = cache_stats['result']['hit_rate']
-                                            if hit_rate > 0:
-                                                st.info(f"📊 Cache: {cache_stats['result']['hits']} hits / {cache_stats['result']['total']} requests ({hit_rate:.0%} hit rate)")
+                                    results = ai_filter.filter_firms(df, heuristics)
                                     
-                                    # Show ACTUAL filtering method used (detect fallback)
-                                    if expected_vc_mode and not used_fallback:
-                                        st.success("✨ **VC Expert Analysis Complete** - Results analyzed by AI with venture capital expertise")
-                                    elif expected_vc_mode and used_fallback:
-                                        st.error("❌ **VC Expert Failed** - Fell back to keyword matching")
-                                        
-                                        # Show actual error if available
-                                        if 'vc_expert_error' in st.session_state:
-                                            st.markdown("**Actual Error from OpenAI:**")
-                                            st.code(st.session_state['vc_expert_error'])
-                                            st.warning("⚠️ Check the terminal/console where Streamlit is running for full error details")
-                                            # Don't clear - keep for reference
-                                        else:
-                                            st.warning("⚠️ **Check the terminal/console** where Streamlit is running - the error details are printed there")
+                                    progress_bar.progress(90)
+                                    status_text.text("✅ Filtering complete!")
                                     
-                                        with st.expander("🔍 Troubleshooting & Diagnosis"):
-                                            st.markdown("""
-                                            **Common Issues:**
-                                            1. **Quota Exceeded**: No OpenAI credits - Add billing at https://platform.openai.com/account/billing
-                                            2. **Rate Limit**: Too many requests - Wait a few minutes
-                                            3. **Invalid Key**: Generate new key at https://platform.openai.com/api-keys
-                                            4. **Network Issue**: Check internet connection
-                                            
-                                            **Check your usage:** https://platform.openai.com/usage
-                                            **Test in Playground:** https://platform.openai.com/playground
-                                            
-                                            **Check terminal/console** where Streamlit is running for detailed error messages.
-                                            """)
-                                    elif openai_key and not vc_available:
-                                        st.warning("⚠️ **Keyword Matching Mode** - VC Expert unavailable (OpenAI not installed)")
-                                        st.info("💡 Install OpenAI: `pip install openai` then restart app for professional VC analysis")
+                                    # CRITICAL: Store results AND DataFrame in session state so they persist after clicking firm names
+                                    # This ensures table NEVER disappears
+                                    st.session_state['filter_results'] = results
+                                    st.session_state['filter_heuristics'] = heuristics
+                                    st.session_state['filter_df'] = df  # Store DataFrame for company data lookup
+                                    
+                                    progress_bar.progress(100)
+                                    # Clear progress indicators after a brief moment
+                                    import time
+                                    time.sleep(0.5)
+                                    progress_bar.empty()
+                                    status_text.empty()
+                                    
+                                    # Show success message
+                                    if results and len(results) > 0:
+                                        st.success("✅ Filtering complete! Results displayed below.")
                                     else:
-                                        st.info("💡 **Tip:** Add an OpenAI API key above for VC Expert analysis with professional investment reasoning")
-                                
-                                    # Show keywords being searched (only for keyword mode)
-                                    keywords = [w for w in heuristics.lower().split() if len(w) > 2]
-                                    if keywords and not openai_key:
-                                        st.caption(f"🔍 Searching for keywords: {', '.join(keywords)}")
-                                    
-                                    # Display results
-                                    for i, firm in enumerate(results, 1):
-                                        with st.container():
-                                            col1, col2 = st.columns([3, 1])
-                                            with col1:
-                                                st.markdown(f"**{i}. {firm['name']}**")
-                                                st.markdown(f"📋 **Reason:** {firm['reason']}")
-                                            with col2:
-                                                st.markdown(f"**Score: {firm['score']:.1f}%**")
-                                            st.divider()
-                                    
-                                    # Auto-create Deal records for top 10 firms
-                                    try:
-                                        # Limit to top 10
-                                        top_results = results[:10]
+                                        st.warning("⚠️ No results returned. This might be due to:")
+                                        st.markdown("""
+                                        - Empty or invalid Excel file
+                                        - No firms in the uploaded data
+                                        - Technical error in processing
                                         
-                                        # Create a helper function to find company data in DataFrame
-                                        def get_company_data_from_df(company_name: str, df: pd.DataFrame) -> dict:
-                                            """Extract company data from DataFrame by name"""
-                                            # Try exact match first
-                                            match = df[df['name'].str.strip().str.lower() == company_name.strip().lower()]
-                                            if match.empty:
-                                                # Try partial match
-                                                match = df[df['name'].str.strip().str.lower().str.contains(company_name.strip().lower(), na=False, regex=False)]
-                                            if not match.empty:
-                                                row = match.iloc[0]
-                                                return {
-                                                    'industry': row.get('industry', ''),
-                                                    'sector': row.get('industry', ''),  # Use industry as sector
-                                                    'stage': row.get('stage', ''),
-                                                    'description': row.get('description', ''),
-                                                    'location': row.get('location', ''),
-                                                    'revenue': row.get('revenue', ''),
-                                                }
-                                            return {}
-                                        
-                                        # Auto-create deals
-                                        created_deals = []
-                                        for firm in top_results:
-                                            company_data = get_company_data_from_df(firm['name'], df)
-                                            
-                                            deal_payload = {
-                                                "name": firm['name'],
-                                                "source": "auto-created_from_filter",
-                                                "owner": None,
-                                                "sector": company_data.get('sector', company_data.get('industry', '')),
-                                                "stage": company_data.get('stage', ''),
-                                                "status": "active"
-                                            }
-                                            
-                                            try:
-                                                response = requests.post(
-                                                    f"{API_BASE_URL}/v2/deals",
-                                                    json=deal_payload,
-                                                    timeout=5
-                                                )
-                                                if response.status_code == 200:
-                                                    deal = response.json()
-                                                    created_deals.append(deal)
-                                            except requests.exceptions.RequestException:
-                                                pass  # Skip if API not available
-                                        
-                                        if created_deals:
-                                            st.success(f"✅ Auto-created {len(created_deals)} deals in Deal Workspace. Check sidebar to select and research.")
-                                            # Store created deal IDs in session state for reference
-                                            st.session_state['auto_created_deals'] = [d['id'] for d in created_deals]
-                                    except Exception as e:
-                                        # Silently fail - don't interrupt user flow
-                                        pass
-                                else:
-                                    st.warning("⚠️ No results returned. This might be due to:")
-                                    st.markdown("""
-                                    - Empty or invalid Excel file
-                                    - No firms in the uploaded data
-                                    - Technical error in processing
+                                        **Try:**
+                                        1. Check the "View Uploaded Data" section above
+                                        2. Verify your Excel file has data
+                                        3. Simplify your heuristics (use fewer keywords)
+                                        """)
                                     
-                                    **Try:**
-                                    1. Check the "View Uploaded Data" section above
-                                    2. Verify your Excel file has data
-                                    3. Simplify your heuristics (use fewer keywords)
-                                    """)
+                                except Exception as e:
+                                    progress_bar.empty()
+                                    status_text.empty()
+                                    raise
                             except Exception as e:
                                 st.error(f"❌ Error during filtering: {str(e)}")
                                 st.markdown("**Debugging info:**")
@@ -676,6 +586,130 @@ def main():
                     
         except Exception as e:
             st.error(f"❌ Error processing file: {str(e)}")
+        
+        # CRITICAL: Display results section OUTSIDE the filter button block
+        # This ensures table ALWAYS shows if stored results exist, even after rerun from button clicks
+        stored_results = st.session_state.get('filter_results', [])
+        stored_df = st.session_state.get('filter_df', None)
+        
+        if stored_results and len(stored_results) > 0:
+            st.subheader("🏆 Top Matching Firms")
+            
+            # Initialize Excel Intelligence Agent for smart data extraction
+            excel_agent = ExcelIntelligenceAgent()
+            
+            # Helper function to get company data from DataFrame using intelligent agent
+            def get_company_data_from_df(company_name: str, df) -> dict:
+                """Extract company data from DataFrame using intelligent agent"""
+                try:
+                    # Use Excel Intelligence Agent to intelligently extract data
+                    extracted_data = excel_agent.extract_company_data(company_name, df)
+                    return extracted_data
+                except Exception as e:
+                    logger.error(f"Error extracting company data: {e}")
+                    return {}
+            
+            # Display results with clickable firm names
+            st.markdown("**💡 Click on any firm name below to auto-fill the Deal Workspace form in the sidebar**")
+            
+            # CRITICAL: ALWAYS use stored results from session state (never use local 'results' variable)
+            # This ensures table NEVER disappears after button clicks
+            display_results = stored_results
+            display_df = stored_df
+            
+            # Safety check: if no stored DataFrame, show warning
+            if display_df is None:
+                st.warning("⚠️ DataFrame not available. Please run the filter again.")
+            else:
+                # Show success message if firm was just selected
+                if 'firm_selected_timestamp' in st.session_state:
+                    selected_firm_name = st.session_state.get('selected_firm', {}).get('name', '')
+                    if selected_firm_name:
+                        st.success(f"✅ **{selected_firm_name}** selected! Check sidebar form - it should be auto-filled.")
+                
+                for i, firm in enumerate(display_results, 1):
+                    with st.container():
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            # Make firm name clickable - use link-style button
+                            button_clicked = st.button(
+                                f"📌 {firm['name']}",
+                                key=f"select_firm_{i}_{hash(firm['name'])}",
+                                use_container_width=False,
+                                help=f"Click to auto-fill Deal Workspace form with {firm['name']} data"
+                            )
+                            
+                            if button_clicked:
+                                # Store selected firm data in session state using intelligent agent
+                                company_data = get_company_data_from_df(firm['name'], display_df)
+                                
+                                # Log what was extracted for debugging
+                                if company_data:
+                                    found_fields = [k for k, v in company_data.items() if v and v != '']
+                                    missing_fields = [k for k, v in company_data.items() if not v or v == '']
+                                    
+                                    if found_fields:
+                                        st.success(f"✅ Extracted from Excel: {', '.join(found_fields)}")
+                                    if missing_fields and 'stage' in missing_fields:
+                                        # Show available columns to help debug
+                                        available_cols = [col for col in display_df.columns if any(keyword in col.lower() for keyword in ['stage', 'round', 'series', 'funding'])]
+                                        if available_cols:
+                                            st.warning(f"⚠️ Stage not found. Excel columns that might contain stage: {', '.join(available_cols[:5])}")
+                                        else:
+                                            st.info(f"ℹ️ Stage column not found in Excel. Available columns: {', '.join(list(display_df.columns)[:10])}")
+                                
+                                # Extract stage with fallback
+                                extracted_stage = company_data.get('stage', '')
+                                
+                                # Parse industry hierarchy for better classification
+                                extracted_industry = company_data.get('industry', '')
+                                extracted_vertical = company_data.get('vertical', '')
+                                extracted_description = company_data.get('description', '')
+                                
+                                try:
+                                    hierarchy_agent = IndustryHierarchyAgent()
+                                    hierarchy = hierarchy_agent.parse_industry_hierarchy(
+                                        extracted_industry, 
+                                        extracted_vertical, 
+                                        extracted_description
+                                    )
+                                    
+                                    # Store full hierarchy for research
+                                    industry_full = hierarchy.get('industry_full', extracted_industry)
+                                except Exception:
+                                    industry_full = extracted_industry
+                                
+                                st.session_state['selected_firm'] = {
+                                    'name': firm['name'],
+                                    'sector': company_data.get('sector', company_data.get('industry', '')),
+                                    'industry': extracted_industry,
+                                    'industry_full': industry_full,  # Store full hierarchy
+                                    'vertical': extracted_vertical,
+                                    'stage': extracted_stage,  # Explicitly set stage
+                                    'description': extracted_description,
+                                    'location': company_data.get('location', ''),
+                                    'revenue': company_data.get('revenue', ''),
+                                    'score': firm.get('score', 0),
+                                    'reason': firm.get('reason', '')
+                                }
+                                
+                                # Debug: Show what's being stored
+                                if extracted_stage:
+                                    st.caption(f"📊 Stage extracted: '{extracted_stage}'")
+                                else:
+                                    st.caption(f"⚠️ Stage not found in Excel for {firm['name']}")
+                                # Store timestamp for UI feedback
+                                st.session_state['firm_selected_timestamp'] = datetime.now()
+                                # Force form to re-render by clearing form submission flag
+                                for key in list(st.session_state.keys()):
+                                    if key.startswith('create_deal_form_') and key.endswith('_submitted'):
+                                        del st.session_state[key]
+                                st.rerun()  # Rerun to update form
+                            
+                            st.markdown(f"📋 **Reason:** {firm['reason']}")
+                        with col2:
+                            st.markdown(f"**Score: {firm['score']:.1f}%**")
+                        st.divider()
     
     # Active Deal Workspace Section (Main Content Area)
     if st.session_state.get('deal_id') is not None:
@@ -719,15 +753,27 @@ def main():
                             existing_research[category] = []
                         existing_research[category].append(finding)
                 
-                # Initialize research agent
+                # Initialize research agent and validation agent
                 research_agent = CompanyResearchAgent(config)
+                # Ensure research agent has OpenAI key from Streamlit session
+                if openai_key and not research_agent.openai_key:
+                    research_agent.openai_key = openai_key
                 
-                # Research button or display existing research
-                if existing_research:
-                    st.info("✅ Research already conducted. Click 'Refresh Research' to update.")
-                    refresh_research = st.button("🔄 Refresh Research", type="primary")
+                validation_agent = ResearchValidationAgent(config)
+                
+                # Auto-trigger research if deal was just created
+                trigger_research = st.session_state.get('trigger_research', False)
+                if trigger_research and deal_id == st.session_state.get('deal_id'):
+                    # Clear the trigger
+                    st.session_state['trigger_research'] = False
+                    refresh_research = True
                 else:
-                    refresh_research = st.button("🔍 Conduct Research", type="primary")
+                    # Research button or display existing research
+                    if existing_research:
+                        st.info("✅ Research already conducted. Click 'Refresh Research' to update.")
+                        refresh_research = st.button("🔄 Refresh Research", type="primary", key="refresh_research_btn")
+                    else:
+                        refresh_research = st.button("🔍 Conduct Research", type="primary", key="conduct_research_btn")
                 
                 if refresh_research:
                     with st.spinner("🔍 Researching company information from internet..."):
@@ -738,16 +784,97 @@ def main():
                                 'description': '',  # Could be enhanced later
                             }
                             
-                            # Conduct research
+                            # Ensure research agent has OpenAI key from session state
+                            if not research_agent.openai_key and openai_key:
+                                research_agent.openai_key = openai_key
+                            
+                            # Prepare additional info with Excel data if available
+                            # Get Excel data for the company to enhance research
+                            excel_df = st.session_state.get('filter_df', None)
+                            if excel_df is not None:
+                                try:
+                                    excel_agent = ExcelIntelligenceAgent()
+                                    excel_data = excel_agent.extract_company_data(deal['name'], excel_df)
+                                    
+                                    # Enhance additional_info with Excel data
+                                    if excel_data.get('industry'):
+                                        additional_info['industry'] = excel_data['industry']
+                                    if excel_data.get('sector'):
+                                        additional_info['sector'] = excel_data['sector']
+                                    if excel_data.get('stage'):
+                                        additional_info['stage'] = excel_data['stage']
+                                    if excel_data.get('vertical'):
+                                        additional_info['vertical'] = excel_data['vertical']
+                                    if excel_data.get('description'):
+                                        additional_info['description'] = excel_data['description']
+                                    
+                                    # Parse industry hierarchy for research
+                                    try:
+                                        hierarchy_agent = IndustryHierarchyAgent()
+                                        hierarchy = hierarchy_agent.parse_industry_hierarchy(
+                                            additional_info.get('industry', ''),
+                                            additional_info.get('vertical', ''),
+                                            additional_info.get('description', '')
+                                        )
+                                        additional_info['industry_full'] = hierarchy.get('industry_full', '')
+                                        additional_info['industry_specific'] = hierarchy.get('industry_specific', '')
+                                        additional_info['industry_niche'] = hierarchy.get('industry_niche', '')
+                                    except Exception:
+                                        pass
+                                    
+                                    if additional_info.get('industry') or additional_info.get('stage'):
+                                        st.caption(f"📊 Using Excel data: Industry={additional_info.get('industry', 'N/A')}, Stage={additional_info.get('stage', 'N/A')}")
+                                except Exception as e:
+                                    pass  # Silently continue if Excel enhancement fails
+                            
+                            # Conduct research with enhanced info
                             research_data = research_agent.research_company(deal['name'], additional_info)
                             
+                            # Validate research completeness
+                            validation = validation_agent.validate_research(research_data, deal['name'])
+                            
+                            # Show validation results
+                            if validation['is_complete']:
+                                st.success(f"✅ Research Complete: {validation['complete_fields']}/{validation['total_fields']} fields populated")
+                            else:
+                                quality_pct = validation['quality_score'] * 100
+                                st.warning(f"⚠️ Research Incomplete: {validation['complete_fields']}/{validation['total_fields']} fields ({quality_pct:.0f}% complete)")
+                                
+                                if validation['missing_fields']:
+                                    st.error(f"❌ Missing fields: {', '.join(validation['missing_fields'])}")
+                                if validation['empty_fields']:
+                                    st.warning(f"⚠️ Empty/Incomplete fields: {', '.join(validation['empty_fields'])}")
+                                
+                                if validation['recommendations']:
+                                    with st.expander("💡 Recommendations to Improve Research", expanded=True):
+                                        for rec in validation['recommendations']:
+                                            st.markdown(f"• {rec}")
+                            
                             # Save research findings to database
+                            # Format quantitative data for storage
+                            quantitative_data = research_data.get('quantitative_data', {})
+                            quant_data_text = ""
+                            if quantitative_data:
+                                quant_lines = []
+                                for key, value in quantitative_data.items():
+                                    if value and value != "Not available":
+                                        label = key.replace('_', ' ').title()
+                                        quant_lines.append(f"{label}: {value}")
+                                if quant_lines:
+                                    quant_data_text = "\n".join(quant_lines)
+                            
                             findings_to_save = [
                                 {
                                     'category': 'company_info',
                                     'source_type': 'agent_analysis',
                                     'content': f"Company Name: {research_data.get('company_name', 'N/A')}\nCountry of Incorporation: {research_data.get('country_of_incorporation', 'N/A')}\nIndustry: {research_data.get('industry', 'N/A')}",
                                     'citation': 'Internet research via Company Research Agent'
+                                },
+                                {
+                                    'category': 'quantitative_data',
+                                    'source_type': 'agent_analysis',
+                                    'content': quant_data_text if quant_data_text else 'No quantitative data found',
+                                    'citation': 'Internet research via Company Research Agent (Enhanced Search Queries)'
                                 },
                                 {
                                     'category': 'industry_background',
@@ -789,10 +916,11 @@ def main():
                                 except:
                                     pass
                             
-                            # Store in session state for display
+                            # Store in session state for display (with validation metadata)
+                            research_data['_validation'] = validation
                             st.session_state[f'research_data_{deal_id}'] = research_data
-                            st.success("✅ Research completed!")
-                            st.rerun()
+                            st.success("✅ Research completed! Scroll down to see results.")
+                            # Don't rerun here - let it display results immediately
                         except Exception as e:
                             st.error(f"❌ Research failed: {str(e)}")
                             st.caption("Make sure OpenAI API key is configured and internet connection is available.")
@@ -832,30 +960,129 @@ def main():
                 if research_data:
                     st.markdown("#### 📊 Research Results")
                     
+                    # Show validation status if available
+                    validation = research_data.get('_validation', {})
+                    if validation:
+                        quality_pct = validation.get('quality_score', 0) * 100
+                        if validation.get('is_complete', False):
+                            st.success(f"✅ Research Quality: {quality_pct:.0f}% Complete ({validation.get('complete_fields', 0)}/{validation.get('total_fields', 0)} fields)")
+                        else:
+                            st.warning(f"⚠️ Research Quality: {quality_pct:.0f}% Complete ({validation.get('complete_fields', 0)}/{validation.get('total_fields', 0)} fields)")
+                    
                     # Company Information
                     with st.expander("🏢 Company Information", expanded=True):
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.markdown(f"**Company Name:** {research_data.get('company_name', 'N/A')}")
-                            st.markdown(f"**Country of Incorporation:** {research_data.get('country_of_incorporation', 'N/A')}")
+                            company_name = research_data.get('company_name', 'N/A')
+                            country = research_data.get('country_of_incorporation', 'N/A')
+                            st.markdown(f"**Company Name:** {company_name}")
+                            st.markdown(f"**Country of Incorporation:** {country}")
                         with col2:
-                            st.markdown(f"**Industry:** {research_data.get('industry', 'N/A')}")
+                            industry = research_data.get('industry', 'N/A')
+                            st.markdown(f"**Industry:** {industry}")
+                    
+                    # Quantitative Data Section (NEW)
+                    quantitative_data = research_data.get('quantitative_data', {})
+                    if quantitative_data and any(v != "Not available" and v for v in quantitative_data.values()):
+                        with st.expander("📊 Quantitative Data", expanded=True):
+                            st.markdown("**Key Metrics & Market Data**")
+                            
+                            # Market Size Metrics
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                tam = quantitative_data.get('market_size_tam', 'Not available')
+                                sam = quantitative_data.get('market_size_sam', 'Not available')
+                                if tam and tam != "Not available":
+                                    st.metric("📈 Market Size (TAM)", tam)
+                                if sam and sam != "Not available":
+                                    st.metric("📊 Serviceable Market (SAM)", sam)
+                            
+                            with col2:
+                                cagr = quantitative_data.get('market_growth_cagr', 'Not available')
+                                market_share = quantitative_data.get('market_share', 'Not available')
+                                if cagr and cagr != "Not available":
+                                    st.metric("📈 Market Growth (CAGR)", cagr)
+                                if market_share and market_share != "Not available":
+                                    st.metric("📊 Market Share", market_share)
+                            
+                            st.divider()
+                            
+                            # Company Metrics
+                            col3, col4 = st.columns(2)
+                            with col3:
+                                revenue = quantitative_data.get('company_revenue', 'Not available')
+                                funding = quantitative_data.get('funding_raised', 'Not available')
+                                if revenue and revenue != "Not available":
+                                    st.metric("💰 Revenue", revenue)
+                                if funding and funding != "Not available":
+                                    st.metric("💵 Funding Raised", funding)
+                            
+                            with col4:
+                                valuation = quantitative_data.get('valuation', 'Not available')
+                                employees = quantitative_data.get('employee_count', 'Not available')
+                                if valuation and valuation != "Not available":
+                                    st.metric("💎 Valuation", valuation)
+                                if employees and employees != "Not available":
+                                    st.metric("👥 Employees", employees)
+                            
+                            # Show all quantitative data in a table for reference
+                            with st.expander("📋 All Quantitative Data", expanded=False):
+                                quant_table_data = []
+                                for key, value in quantitative_data.items():
+                                    if value and value != "Not available":
+                                        label = key.replace('_', ' ').title()
+                                        quant_table_data.append({"Metric": label, "Value": value})
+                                
+                                if quant_table_data:
+                                    import pandas as pd
+                                    quant_df = pd.DataFrame(quant_table_data)
+                                    st.dataframe(quant_df, use_container_width=True, hide_index=True)
+                                else:
+                                    st.info("No quantitative data available. Enhanced search queries are working, but specific numbers weren't found in search results.")
+                    else:
+                        with st.expander("📊 Quantitative Data", expanded=False):
+                            st.info("💡 Quantitative data extraction is enabled. Numbers will appear here when found in search results.")
+                            st.caption("Enhanced search queries are targeting: market size, growth rates, revenue, funding, and other metrics.")
                     
                     # Industry Background
-                    with st.expander("📈 Industry Background & Growth", expanded=True):
-                        st.markdown(research_data.get('industry_background', 'Not available'))
+                    industry_bg = research_data.get('industry_background', 'Not available')
+                    if industry_bg and industry_bg not in ['Not available', 'Unknown', 'N/A', '']:
+                        with st.expander("📈 Industry Background & Growth", expanded=True):
+                            st.markdown(industry_bg)
+                    else:
+                        with st.expander("📈 Industry Background & Growth", expanded=False):
+                            st.warning("⚠️ Industry background not available. Research may need to be refreshed.")
+                            st.markdown(industry_bg if industry_bg else "Not available")
                     
                     # Company Background
-                    with st.expander("🏛️ Company Background", expanded=False):
-                        st.markdown(research_data.get('company_background', 'Not available'))
+                    company_bg = research_data.get('company_background', 'Not available')
+                    if company_bg and company_bg not in ['Not available', 'Unknown', 'N/A', '']:
+                        with st.expander("🏛️ Company Background", expanded=True):
+                            st.markdown(company_bg)
+                    else:
+                        with st.expander("🏛️ Company Background", expanded=False):
+                            st.warning("⚠️ Company background not available. Research may need to be refreshed.")
+                            st.markdown(company_bg if company_bg else "Not available")
                     
                     # Founder Profile
-                    with st.expander("👤 Founder Profile", expanded=False):
-                        st.markdown(research_data.get('founder_profile', 'Not available'))
+                    founder = research_data.get('founder_profile', 'Not available')
+                    if founder and founder not in ['Not available', 'Unknown', 'N/A', '']:
+                        with st.expander("👤 Founder Profile", expanded=True):
+                            st.markdown(founder)
+                    else:
+                        with st.expander("👤 Founder Profile", expanded=False):
+                            st.warning("⚠️ Founder profile not available. Research may need to be refreshed.")
+                            st.markdown(founder if founder else "Not available")
                     
                     # Competition
-                    with st.expander("⚔️ Competition & Market Landscape", expanded=False):
-                        st.markdown(research_data.get('competition', 'Not available'))
+                    competition = research_data.get('competition', 'Not available')
+                    if competition and competition not in ['Not available', 'Unknown', 'N/A', '']:
+                        with st.expander("⚔️ Competition & Market Landscape", expanded=True):
+                            st.markdown(competition)
+                    else:
+                        with st.expander("⚔️ Competition & Market Landscape", expanded=False):
+                            st.warning("⚠️ Competition analysis not available. Research may need to be refreshed.")
+                            st.markdown(competition if competition else "Not available")
                     
             else:
                 st.error(f"❌ Could not fetch deal: {response.status_code}")
@@ -870,28 +1097,117 @@ def main():
         st.markdown("---")
         st.markdown("### 💼 Deal Workspace (v2)")
         
-        # Create Deal Form
-        with st.expander("➕ Create New Deal", expanded=False):
-            with st.form("create_deal_form"):
-                deal_name = st.text_input("Deal Name *", help="Name of the investment opportunity")
-                deal_source = st.text_input("Source", help="How the deal was sourced (e.g., referral, outreach)")
-                deal_owner = st.text_input("Owner", help="Deal owner/analyst name")
-                deal_sector = st.text_input("Sector", help="Industry sector")
-                deal_stage = st.text_input("Stage", help="Investment stage (e.g., Series A, Series B)")
+        # Create Deal Form (auto-filled when firm name is clicked)
+        # Check if a firm was selected to auto-fill form - read fresh from session state
+        selected_firm = st.session_state.get('selected_firm', {})
+        expander_expanded = bool(selected_firm)  # Expand if firm is selected
+        
+        with st.expander("➕ Create New Deal", expanded=expander_expanded):
+            if selected_firm:
+                firm_name = selected_firm.get('name', 'Unknown')
+                st.success(f"✅ **Selected Firm:** {firm_name}")
+                if selected_firm.get('sector'):
+                    st.caption(f"📊 Sector: {selected_firm.get('sector')}")
+                if selected_firm.get('stage'):
+                    st.caption(f"📈 Stage: {selected_firm.get('stage')}")
+                else:
+                    st.warning(f"⚠️ Stage not found in Excel for {firm_name}")
+                    # Show available columns to help user
+                    excel_df = st.session_state.get('filter_df', None)
+                    if excel_df is not None:
+                        stage_cols = [col for col in excel_df.columns if any(kw in col.lower() for kw in ['stage', 'round', 'series', 'funding'])]
+                        if stage_cols:
+                            st.caption(f"💡 Excel columns that might contain stage: {', '.join(stage_cols[:3])}")
+                st.info("💡 Form fields below are pre-filled. Review and click 'Create Deal & Start Research' to proceed.")
+            
+            # CRITICAL: Use unique form key that changes when firm name OR timestamp changes
+            # This forces Streamlit to create a completely new form instance with fresh values
+            firm_name_for_key = selected_firm.get('name', 'none')
+            firm_timestamp = st.session_state.get('firm_selected_timestamp', '')
+            # Include timestamp in form key to force re-render when firm is selected
+            form_key = f"create_deal_form_{firm_name_for_key}_{str(firm_timestamp)}"
+            
+            with st.form(form_key, clear_on_submit=False):
+                # CRITICAL: Read selected_firm fresh from session state INSIDE the form
+                # This ensures we get the latest value after rerun
+                current_selected = st.session_state.get('selected_firm', {})
                 
-                create_button = st.form_submit_button("Create Deal", type="primary")
+                # Auto-fill values from selected firm (intelligently extracted from Excel)
+                default_name = current_selected.get('name', '')
+                default_sector = current_selected.get('sector', current_selected.get('industry', ''))
+                default_stage = current_selected.get('stage', '')
+                
+                # Debug: Show what was extracted from Excel
+                if default_name:
+                    extracted_fields = []
+                    if default_sector:
+                        extracted_fields.append(f"Sector: {default_sector}")
+                    if default_stage:
+                        extracted_fields.append(f"Stage: {default_stage}")
+                    if extracted_fields:
+                        st.caption(f"🔍 Auto-filled from Excel: {', '.join(extracted_fields)}")
+                    else:
+                        st.caption(f"🔍 Company: **{default_name}** (checking Excel for industry/stage...)")
+                
+                # Form inputs - values will be set from defaults when form re-renders with new key
+                # Include timestamp hash in key to force new input instances
+                timestamp_hash = hash(str(firm_timestamp)) if firm_timestamp else 0
+                deal_name = st.text_input(
+                    "Deal Name *", 
+                    value=default_name, 
+                    key=f"deal_name_{firm_name_for_key}_{timestamp_hash}",
+                    help="Name of the investment opportunity (auto-filled when you click a firm name)"
+                )
+                deal_source = st.text_input(
+                    "Source", 
+                    value="filter_results", 
+                    key=f"deal_source_{firm_name_for_key}",
+                    help="How the deal was sourced (e.g., referral, outreach)"
+                )
+                deal_owner = st.text_input(
+                    "Owner", 
+                    key=f"deal_owner_{firm_name_for_key}",
+                    help="Deal owner/analyst name"
+                )
+                deal_sector = st.text_input(
+                    "Sector *", 
+                    value=default_sector, 
+                    key=f"deal_sector_{firm_name_for_key}_{timestamp_hash}",
+                    help="Industry sector (auto-filled from Excel when you click a firm name - intelligently extracted)"
+                )
+                deal_stage = st.text_input(
+                    "Stage *", 
+                    value=default_stage, 
+                    key=f"deal_stage_{firm_name_for_key}_{timestamp_hash}",
+                    help="Investment stage (auto-filled from Excel when you click a firm name - intelligently extracted)"
+                )
+                
+                # Debug: Show what stage value is being used
+                if default_stage:
+                    st.caption(f"✅ Stage auto-filled: **{default_stage}**")
+                elif default_name:
+                    st.caption(f"⚠️ Stage not found in Excel for {default_name}. Please enter manually.")
+                
+                create_button = st.form_submit_button("Create Deal & Start Research", type="primary")
                 
                 if create_button:
                     if not deal_name:
                         st.error("Deal name is required")
-                    else:
+                    elif not deal_sector or deal_sector.strip() == '':
+                        st.warning("⚠️ Sector is recommended. The intelligent agent will try to extract it from Excel if available.")
+                        # Continue anyway - let user proceed
+                    elif not deal_stage or deal_stage.strip() == '':
+                        st.warning("⚠️ Stage is recommended. The intelligent agent will try to extract it from Excel if available.")
+                        # Continue anyway - let user proceed
+                    
+                    if deal_name:
                         try:
                             # Call API to create deal
                             response = requests.post(
                                 f"{API_BASE_URL}/v2/deals",
                                 json={
                                     "name": deal_name,
-                                    "source": deal_source if deal_source else None,
+                                    "source": deal_source if deal_source else "filter_results",
                                     "owner": deal_owner if deal_owner else None,
                                     "sector": deal_sector if deal_sector else None,
                                     "stage": deal_stage if deal_stage else None,
@@ -902,13 +1218,36 @@ def main():
                             if response.status_code == 200:
                                 deal = response.json()
                                 st.success(f"✅ Deal '{deal['name']}' created successfully!")
+                                
+                                # Store deal ID and trigger research
                                 st.session_state.deal_id = deal['id']
+                                st.session_state['trigger_research'] = True
+                                st.session_state['newly_created_deal'] = deal
+                                
+                                # Clear selected firm
+                                if 'selected_firm' in st.session_state:
+                                    del st.session_state['selected_firm']
+                                
                                 st.rerun()
                             else:
                                 st.error(f"❌ Error creating deal: {response.text}")
                         except requests.exceptions.RequestException as e:
-                            st.error(f"❌ Could not connect to API: {str(e)}")
-                            st.caption("💡 Make sure the FastAPI backend is running (uvicorn app.main:app)")
+                            st.error("❌ **Backend API Not Running**")
+                            st.markdown("""
+                            **The FastAPI backend is not running. Please start it:**
+                            
+                            1. **Open a new terminal window**
+                            2. **Run this command:**
+                            ```bash
+                            cd "/Users/pinakiaich/Documents/Personal/Python Projects/vc-stack/backend"
+                            uvicorn app.main:app --reload --port 8000
+                            ```
+                            3. **Keep that terminal running**
+                            4. **Come back here and click 'Create Deal & Start Research' again**
+                            
+                            See `BACKEND_REQUIRED.md` for detailed instructions.
+                            """)
+                            st.caption(f"Technical error: {str(e)}")
         
         # Select Deal Dropdown
         try:

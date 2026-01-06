@@ -83,8 +83,8 @@ class HybridFilter:
             self.vc_expert_async.document_store = document_store
         self.logger.info("Document store set for RAG")
         
-        # Configuration
-        self.vector_search_top_k = 50  # Pre-filter to top 50 candidates
+        # Configuration - Optimized for speed
+        self.vector_search_top_k = 30  # Reduced from 50 to 30 for faster processing (still plenty for top 10)
         self.final_top_n = 10  # Final results to return
     
     def filter_firms(
@@ -176,12 +176,14 @@ class HybridFilter:
                 self.logger.info("Using async parallel processing for faster analysis")
                 # Run async function in sync context (Streamlit compatible)
                 # Streamlit doesn't run in async context, so asyncio.run() is safe
+                # Increase concurrency and batch size for better performance
                 llm_results = asyncio.run(
                     self.vc_expert_async.analyze_firms_async(
                         candidate_firms, 
                         criteria, 
                         top_n=top_n,
-                        max_concurrent=5  # Process 5 batches in parallel
+                        batch_size=10,  # Increased from 5 to 10 for fewer API calls
+                        max_concurrent=10  # Increased from 5 to 10 for faster parallel processing
                     )
                 )
             else:

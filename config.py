@@ -117,6 +117,24 @@ class Config:
         """Get AI model to use"""
         return os.getenv('AI_MODEL', 'gpt-3.5-turbo')
     
+    def get_cache_dir(self) -> str:
+        """Get cache directory path"""
+        return os.getenv('CACHE_DIR', '.cache')
+    
+    def is_cache_enabled(self) -> bool:
+        """Check if caching is enabled"""
+        return os.getenv('ENABLE_CACHE', 'true').lower() == 'true'
+    
+    def get_cache_ttl_hours(self) -> Optional[int]:
+        """Get cache TTL in hours (None = no expiration)"""
+        ttl_str = os.getenv('CACHE_TTL_HOURS', '')
+        if ttl_str:
+            try:
+                return int(ttl_str)
+            except ValueError:
+                return None
+        return None
+    
     def validate_config(self) -> Dict[str, bool]:
         """Validate current configuration"""
         return {

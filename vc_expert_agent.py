@@ -248,16 +248,52 @@ Focus on investment merit using ALL available PitchBook data. Be specific and da
     
     def _parse_expert_analysis(self, response_text: str, top_n: int) -> List[Dict]:
         """Parse expert analysis response into structured results"""
+        import json
+        import re
+        
         try:
-            import json
-            
             # Extract JSON from response
             start_idx = response_text.find('[')
             end_idx = response_text.rfind(']') + 1
             
             if start_idx != -1 and end_idx > start_idx:
-                json_text = response_text[start_idx:end_idx]
-                results = json.loads(json_text)
+                json_text = response_text[start_idx:end_idx].strip()
+                
+                # Clean JSON: Remove markdown code blocks if present
+                json_text = re.sub(r'^```json\s*', '', json_text)
+                json_text = re.sub(r'^```\s*', '', json_text)
+                json_text = re.sub(r'```\s*$', '', json_text)
+                json_text = json_text.strip()
+                
+                # Try to parse JSON
+                try:
+                    results = json.loads(json_text)
+                except json.JSONDecodeError as json_err:
+                    # Try to fix common JSON issues
+                    self.logger.warning(f"Initial JSON parse failed, attempting fixes: {json_err}")
+                    
+                    # Fix 1: Replace single quotes with double quotes (common LLM mistake)
+                    json_text_fixed = json_text.replace("'", '"')
+                    
+                    # Fix 2: Remove trailing commas before closing brackets/braces
+                    json_text_fixed = re.sub(r',\s*}', '}', json_text_fixed)
+                    json_text_fixed = re.sub(r',\s*]', ']', json_text_fixed)
+                    
+                    # Fix 3: Fix unquoted keys (e.g., {name: "value"} -> {"name": "value"})
+                    json_text_fixed = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', json_text_fixed)
+                    
+                    try:
+                        results = json.loads(json_text_fixed)
+                        self.logger.info("Successfully fixed and parsed JSON")
+                    except json.JSONDecodeError:
+                        # If still failing, try to extract valid entries manually
+                        self.logger.error(f"JSON fix failed. Attempting manual extraction. Error: {json_err}")
+                        self.logger.debug(f"Problematic JSON (first 500 chars): {json_text[:500]}")
+                        raise ValueError(f"Unable to parse JSON response: {json_err}")
+                
+                # Validate results
+                if not isinstance(results, list):
+                    raise ValueError(f"Expected JSON array, got {type(results)}")
                 
                 # Sort by score and return top N
                 results_sorted = sorted(results, key=lambda x: x.get('score', 0), reverse=True)
@@ -271,11 +307,11 @@ Focus on investment merit using ALL available PitchBook data. Be specific and da
                     for firm in results_sorted[:top_n]
                 ]
             else:
-                raise ValueError("No valid JSON found in expert analysis")
+                raise ValueError("No valid JSON array found in expert analysis")
                 
         except Exception as e:
             self.logger.error(f"Error parsing expert analysis: {str(e)}")
-            self.logger.debug(f"Raw response: {response_text}")
+            self.logger.debug(f"Raw response (first 1000 chars): {response_text[:1000]}")
             raise
     
     def is_available(self) -> bool:
