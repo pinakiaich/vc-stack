@@ -12,6 +12,9 @@ from company_research_agent import CompanyResearchAgent
 from research_validation_agent import ResearchValidationAgent
 from excel_intelligence_agent import ExcelIntelligenceAgent
 from industry_hierarchy_agent import IndustryHierarchyAgent
+from data_validation_agent import DataValidationAgent
+from enhanced_vc_research_agent import EnhancedVCResearchAgent
+from vc_knowledge_training_agent import VCKnowledgeTrainingAgent
 import json
 
 st.set_page_config(
@@ -63,6 +66,50 @@ def main():
                 del st.session_state['openai_key']
             st.rerun()
         st.divider()
+    
+    # VC Knowledge Base Section
+    st.markdown("### 🧠 VC Knowledge Base")
+    
+    # Check if VC knowledge base exists
+    vc_knowledge_agent = st.session_state.get('vc_knowledge_agent', None)
+    
+    if vc_knowledge_agent:
+        st.success("✅ VC Knowledge Base Loaded")
+        st.caption(f"📚 Knowledge base ready for enhanced research")
+    else:
+        st.info("ℹ️ VC Knowledge Base not loaded")
+        st.caption("Build knowledge base for enhanced research with VC industry context")
+        
+        if st.button("🔨 Build VC Knowledge Base", help="This will take 10-15 minutes"):
+            with st.spinner("🔍 Collecting VC industry knowledge... This may take 10-15 minutes"):
+                try:
+                    from vc_data_search_agent import VCDataSearchAgent
+                    from vc_knowledge_training_agent import VCKnowledgeTrainingAgent
+                    from embedding_service import EmbeddingService
+                    
+                    # Step 1: Search for VC knowledge
+                    search_agent = VCDataSearchAgent()
+                    knowledge_items = search_agent.collect_vc_knowledge_base(max_items=50)  # Start with 50 for faster testing
+                    
+                    if knowledge_items:
+                        # Step 2: Train knowledge base
+                        embedding_service = EmbeddingService(config, use_openai=False)
+                        training_agent = VCKnowledgeTrainingAgent(config, embedding_service=embedding_service)
+                        stats = training_agent.train_on_vc_data(knowledge_items)
+                        
+                        # Store in session state
+                        st.session_state['vc_knowledge_agent'] = training_agent
+                        
+                        st.success(f"✅ VC Knowledge Base Built!")
+                        st.caption(f"Processed {stats['processed']} items, created {stats['total_chunks']} chunks")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ No knowledge items collected. Check internet connection.")
+                except Exception as e:
+                    st.error(f"❌ Error building knowledge base: {e}")
+                    st.caption("You can continue without it - standard research will still work")
+    
+    st.divider()
     
     # Initialize document store for RAG (if documents are uploaded)
     if 'document_store' not in st.session_state:
@@ -384,6 +431,51 @@ def main():
             
             st.success(f"✅ Loaded {len(df)} firms from Excel")
             
+            # Validate Excel data using Data Validation Agent
+            try:
+                validation_agent = DataValidationAgent()
+                
+                # Validate a sample of companies
+                sample_size = min(5, len(df))
+                validation_results = []
+                
+                for idx in range(sample_size):
+                    company_name = df.iloc[idx].get('name', '')
+                    if company_name:
+                        company_data = {
+                            'name': company_name,
+                            'industry': df.iloc[idx].get('industry', ''),
+                            'stage': df.iloc[idx].get('stage', ''),
+                            'revenue': df.iloc[idx].get('revenue', ''),
+                            'description': df.iloc[idx].get('description', ''),
+                            'location': df.iloc[idx].get('location', ''),
+                        }
+                        validation = validation_agent.validate_excel_data(company_data, company_name)
+                        validation_results.append({
+                            'company': company_name,
+                            'validation': validation
+                        })
+                
+                # Show validation summary
+                if validation_results:
+                    total_valid = sum(1 for r in validation_results if r['validation']['is_valid'])
+                    avg_confidence = sum(r['validation']['confidence'] for r in validation_results) / len(validation_results)
+                    
+                    if total_valid == len(validation_results):
+                        st.success(f"✅ Data Quality: {total_valid}/{len(validation_results)} companies validated (Avg confidence: {avg_confidence:.0%})")
+                    else:
+                        st.warning(f"⚠️ Data Quality: {total_valid}/{len(validation_results)} companies validated (Avg confidence: {avg_confidence:.0%})")
+                        with st.expander("🔍 View Validation Details", expanded=False):
+                            for result in validation_results:
+                                if not result['validation']['is_valid']:
+                                    st.markdown(f"**{result['company']}:**")
+                                    if result['validation']['issues']:
+                                        st.caption(f"Issues: {', '.join(result['validation']['issues'])}")
+                                    if result['validation']['missing_fields']:
+                                        st.caption(f"Missing: {', '.join(result['validation']['missing_fields'])}")
+            except Exception as e:
+                st.caption(f"ℹ️ Validation check skipped: {e}")
+            
             # Display sample data and data quality info
             with st.expander("📊 View Uploaded Data (Click to expand)", expanded=True):
                 # Show info about data processing
@@ -397,20 +489,80 @@ def main():
                 
                 st.markdown("**🔍 Column Detection:**")
                 
-                # Show which columns were detected/mapped
+                # Show which columns were detected/mapped (VC analyst approach - check multiple variations)
                 detected_cols = {}
-                for col in ['name', 'description', 'industry', 'stage', 'revenue']:
-                    if col in df.columns:
-                        # Count non-empty values
-                        non_empty = (df[col] != '').sum()
-                        if non_empty > 0:
-                            detected_cols[col] = f'Found ✓ ({non_empty}/{len(df)} filled)'
-                        else:
-                            detected_cols[col] = 'Empty (0 filled)'
-                    else:
-                        detected_cols[col] = 'Not found'
+                # Check for standard columns and also look for variations
+                # CRITICAL: "First Financing Deal Type 2" is the user-specified column for stage
+                columns_to_check = {
+                    'name': ['name', 'company', 'companies', 'company name'],
+                    'description': ['description', 'desc', 'about', 'summary'],
+                    'industry': ['industry', 'sector', 'primary industry', 'vertical'],
+                    'stage': ['first financing deal type 2', 'first financing deal type', 'financing deal type', 'deal type', 'stage', 'funding stage'],  # User-specified column FIRST
+                    'revenue': ['revenue', 'arr', 'annual revenue', 'sales'],
+                    'opportunity_score': ['opportunity score', 'opportunity', 'opportunity_score', 'opp score'],
+                    'exit_probability_score': ['exit probability score', 'exit probability', 'exit prob', 'exit_probability_score', 'exit score']
+                }
                 
-                col_status1, col_status2 = st.columns(2)
+                for standard_col, variations in columns_to_check.items():
+                    found = False
+                    for var in variations:
+                        # For "First Financing Deal Type 2", use more flexible matching
+                        if standard_col == 'stage' and 'first financing deal type 2' in var.lower():
+                            # Try exact match first
+                            if var in df.columns:
+                                non_empty = (df[var] != '').sum()
+                                if non_empty > 0:
+                                    detected_cols[standard_col] = f'Found ✓ ({non_empty}/{len(df)} filled) [from "{var}"]'
+                                    found = True
+                                    break
+                            # Try case-insensitive exact match
+                            for col in df.columns:
+                                if ' '.join(col.lower().split()) == ' '.join(var.lower().split()):
+                                    non_empty = (df[col] != '').sum()
+                                    if non_empty > 0:
+                                        detected_cols[standard_col] = f'Found ✓ ({non_empty}/{len(df)} filled) [from "{col}"]'
+                                        found = True
+                                        break
+                            if found:
+                                break
+                            # Try contains all keywords
+                            for col in df.columns:
+                                col_lower = col.lower()
+                                if all(keyword in col_lower for keyword in ['first', 'financing', 'deal', 'type', '2']):
+                                    non_empty = (df[col] != '').sum()
+                                    if non_empty > 0:
+                                        detected_cols[standard_col] = f'Found ✓ ({non_empty}/{len(df)} filled) [from "{col}"]'
+                                        found = True
+                                        break
+                            if found:
+                                break
+                        else:
+                            # Check exact match first
+                            if var in df.columns:
+                                non_empty = (df[var] != '').sum()
+                                if non_empty > 0:
+                                    detected_cols[standard_col] = f'Found ✓ ({non_empty}/{len(df)} filled) [from "{var}"]'
+                                    found = True
+                                    break
+                                else:
+                                    detected_cols[standard_col] = f'Empty (0 filled) [found "{var}" but empty]'
+                                    found = True
+                                    break
+                            # Check case-insensitive partial match
+                            else:
+                                for col in df.columns:
+                                    if var.lower() in col.lower() or col.lower() in var.lower():
+                                        non_empty = (df[col] != '').sum()
+                                        if non_empty > 0:
+                                            detected_cols[standard_col] = f'Found ✓ ({non_empty}/{len(df)} filled) [from "{col}"]'
+                                            found = True
+                                            break
+                                if found:
+                                    break
+                    if not found:
+                        detected_cols[standard_col] = 'Not found'
+                
+                col_status1, col_status2, col_status3 = st.columns(3)
                 with col_status1:
                     for key in ['name', 'description', 'industry']:
                         if 'Found ✓' in detected_cols[key]:
@@ -429,6 +581,17 @@ def main():
                         else:
                             status = "❌"
                         st.text(f"{status} {key}: {detected_cols[key]}")
+                with col_status3:
+                    for key in ['opportunity_score', 'exit_probability_score']:
+                        if 'Found ✓' in detected_cols[key]:
+                            status = "✅"
+                        elif 'Empty' in detected_cols[key]:
+                            status = "⚠️"
+                        else:
+                            status = "❌"
+                        # Display with friendly names
+                        display_name = key.replace('_', ' ').title()
+                        st.text(f"{status} {display_name}: {detected_cols[key]}")
                 
                 st.divider()
                 
@@ -689,6 +852,8 @@ def main():
                                     'description': extracted_description,
                                     'location': company_data.get('location', ''),
                                     'revenue': company_data.get('revenue', ''),
+                                    'opportunity_score': company_data.get('opportunity_score', ''),
+                                    'exit_probability_score': company_data.get('exit_probability_score', ''),
                                     'score': firm.get('score', 0),
                                     'reason': firm.get('reason', '')
                                 }
@@ -754,12 +919,14 @@ def main():
                         existing_research[category].append(finding)
                 
                 # Initialize research agent and validation agent
+                # Initialize research agents
                 research_agent = CompanyResearchAgent(config)
                 # Ensure research agent has OpenAI key from Streamlit session
                 if openai_key and not research_agent.openai_key:
                     research_agent.openai_key = openai_key
                 
                 validation_agent = ResearchValidationAgent(config)
+                data_validation_agent = DataValidationAgent()
                 
                 # Auto-trigger research if deal was just created
                 trigger_research = st.session_state.get('trigger_research', False)
@@ -778,77 +945,138 @@ def main():
                 if refresh_research:
                     with st.spinner("🔍 Researching company information from internet..."):
                         try:
-                            # Prepare additional info from deal
-                            additional_info = {
-                                'industry': deal.get('sector', ''),
-                                'description': '',  # Could be enhanced later
-                            }
-                            
-                            # Ensure research agent has OpenAI key from session state
-                            if not research_agent.openai_key and openai_key:
-                                research_agent.openai_key = openai_key
-                            
-                            # Prepare additional info with Excel data if available
-                            # Get Excel data for the company to enhance research
+                            # Get Excel data for the company
                             excel_df = st.session_state.get('filter_df', None)
+                            excel_data = {}
+                            
                             if excel_df is not None:
                                 try:
                                     excel_agent = ExcelIntelligenceAgent()
                                     excel_data = excel_agent.extract_company_data(deal['name'], excel_df)
-                                    
-                                    # Enhance additional_info with Excel data
-                                    if excel_data.get('industry'):
-                                        additional_info['industry'] = excel_data['industry']
-                                    if excel_data.get('sector'):
-                                        additional_info['sector'] = excel_data['sector']
-                                    if excel_data.get('stage'):
-                                        additional_info['stage'] = excel_data['stage']
-                                    if excel_data.get('vertical'):
-                                        additional_info['vertical'] = excel_data['vertical']
-                                    if excel_data.get('description'):
-                                        additional_info['description'] = excel_data['description']
-                                    
-                                    # Parse industry hierarchy for research
-                                    try:
-                                        hierarchy_agent = IndustryHierarchyAgent()
-                                        hierarchy = hierarchy_agent.parse_industry_hierarchy(
-                                            additional_info.get('industry', ''),
-                                            additional_info.get('vertical', ''),
-                                            additional_info.get('description', '')
-                                        )
-                                        additional_info['industry_full'] = hierarchy.get('industry_full', '')
-                                        additional_info['industry_specific'] = hierarchy.get('industry_specific', '')
-                                        additional_info['industry_niche'] = hierarchy.get('industry_niche', '')
-                                    except Exception:
-                                        pass
-                                    
-                                    if additional_info.get('industry') or additional_info.get('stage'):
-                                        st.caption(f"📊 Using Excel data: Industry={additional_info.get('industry', 'N/A')}, Stage={additional_info.get('stage', 'N/A')}")
                                 except Exception as e:
-                                    pass  # Silently continue if Excel enhancement fails
+                                    st.caption(f"ℹ️ Could not extract Excel data: {e}")
                             
-                            # Conduct research with enhanced info
-                            research_data = research_agent.research_company(deal['name'], additional_info)
+                            # Prepare additional info from deal and Excel
+                            additional_info = {
+                                'industry': deal.get('sector', excel_data.get('industry', '')),
+                                'description': excel_data.get('description', ''),
+                            }
                             
-                            # Validate research completeness
-                            validation = validation_agent.validate_research(research_data, deal['name'])
+                            # Enhance with Excel data
+                            if excel_data.get('sector'):
+                                additional_info['sector'] = excel_data['sector']
+                            if excel_data.get('stage'):
+                                additional_info['stage'] = excel_data['stage']
+                            if excel_data.get('vertical'):
+                                additional_info['vertical'] = excel_data['vertical']
                             
-                            # Show validation results
-                            if validation['is_complete']:
-                                st.success(f"✅ Research Complete: {validation['complete_fields']}/{validation['total_fields']} fields populated")
-                            else:
-                                quality_pct = validation['quality_score'] * 100
-                                st.warning(f"⚠️ Research Incomplete: {validation['complete_fields']}/{validation['total_fields']} fields ({quality_pct:.0f}% complete)")
+                            # Parse industry hierarchy
+                            try:
+                                hierarchy_agent = IndustryHierarchyAgent()
+                                hierarchy = hierarchy_agent.parse_industry_hierarchy(
+                                    additional_info.get('industry', ''),
+                                    additional_info.get('vertical', ''),
+                                    additional_info.get('description', '')
+                                )
+                                additional_info['industry_full'] = hierarchy.get('industry_full', '')
+                                additional_info['industry_specific'] = hierarchy.get('industry_specific', '')
+                                additional_info['industry_niche'] = hierarchy.get('industry_niche', '')
+                            except Exception:
+                                pass
+                            
+                            # Try to use Enhanced VC Research Agent if VC knowledge base is available
+                            use_enhanced = False
+                            
+                            try:
+                                # Check if VC knowledge base exists (stored in session state)
+                                vc_knowledge_agent = st.session_state.get('vc_knowledge_agent', None)
                                 
-                                if validation['missing_fields']:
-                                    st.error(f"❌ Missing fields: {', '.join(validation['missing_fields'])}")
-                                if validation['empty_fields']:
-                                    st.warning(f"⚠️ Empty/Incomplete fields: {', '.join(validation['empty_fields'])}")
+                                if vc_knowledge_agent:
+                                    # Use enhanced research agent
+                                    enhanced_research_agent = EnhancedVCResearchAgent(config, vc_knowledge_agent=vc_knowledge_agent)
+                                    if openai_key:
+                                        # Ensure OpenAI key is set
+                                        enhanced_research_agent.base_research_agent.openai_key = openai_key
+                                    
+                                    research_data = enhanced_research_agent.research_company_comprehensive(
+                                        company_name=deal['name'],
+                                        excel_data=excel_data,
+                                        additional_info=additional_info
+                                    )
+                                    use_enhanced = True
+                                    st.success("✅ Using Enhanced VC Research (with VC knowledge base)")
+                            except Exception as e:
+                                st.caption(f"ℹ️ Enhanced research not available, using standard research: {e}")
+                            
+                            # Fallback to standard research agent
+                            if not use_enhanced:
+                                # Ensure research agent has OpenAI key from session state
+                                if not research_agent.openai_key and openai_key:
+                                    research_agent.openai_key = openai_key
                                 
-                                if validation['recommendations']:
-                                    with st.expander("💡 Recommendations to Improve Research", expanded=True):
-                                        for rec in validation['recommendations']:
-                                            st.markdown(f"• {rec}")
+                                # Conduct standard research
+                                research_data = research_agent.research_company(deal['name'], additional_info)
+                                
+                                # Add validation metadata (basic)
+                                research_data['_validation'] = {
+                                    'excel_validation': None,
+                                    'cross_check': None,
+                                    'filled_data': None,
+                                }
+                            
+                            # Cross-check Excel vs Research data
+                            if excel_data and research_data:
+                                try:
+                                    cross_check = data_validation_agent.cross_check_data(
+                                        excel_data, 
+                                        research_data, 
+                                        deal['name']
+                                    )
+                                    
+                                    # Store cross-check results
+                                    research_data['_cross_check'] = cross_check
+                                    
+                                    # Show cross-check results
+                                    if cross_check.get('discrepancies'):
+                                        st.warning(f"⚠️ Found {len(cross_check['discrepancies'])} data discrepancies")
+                                        with st.expander("🔍 View Discrepancies", expanded=False):
+                                            for disc in cross_check['discrepancies']:
+                                                st.markdown(f"**{disc['field']}:**")
+                                                st.caption(f"Excel: {disc['excel']}")
+                                                st.caption(f"Research: {disc['research']}")
+                                                st.caption(f"💡 {disc['recommendation']}")
+                                    
+                                    if cross_check.get('matches'):
+                                        st.success(f"✅ {len(cross_check['matches'])} fields match between Excel and Research")
+                                    
+                                except Exception as e:
+                                    st.caption(f"ℹ️ Cross-check skipped: {e}")
+                            
+                            # Validate research completeness (if not already validated by enhanced agent)
+                            if not use_enhanced or '_validation' not in research_data or 'quality_score' not in research_data.get('_validation', {}):
+                                validation = validation_agent.validate_research(research_data, deal['name'])
+                                
+                                # Show validation results
+                                if validation['is_complete']:
+                                    st.success(f"✅ Research Complete: {validation['complete_fields']}/{validation['total_fields']} fields populated")
+                                else:
+                                    quality_pct = validation['quality_score'] * 100
+                                    st.warning(f"⚠️ Research Incomplete: {validation['complete_fields']}/{validation['total_fields']} fields ({quality_pct:.0f}% complete)")
+                                    
+                                    if validation['missing_fields']:
+                                        st.error(f"❌ Missing fields: {', '.join(validation['missing_fields'])}")
+                                    if validation['empty_fields']:
+                                        st.warning(f"⚠️ Empty/Incomplete fields: {', '.join(validation['empty_fields'])}")
+                                    
+                                    if validation['recommendations']:
+                                        with st.expander("💡 Recommendations to Improve Research", expanded=True):
+                                            for rec in validation['recommendations']:
+                                                st.markdown(f"• {rec}")
+                                
+                                # Store validation in research data
+                                if '_validation' not in research_data:
+                                    research_data['_validation'] = {}
+                                research_data['_validation']['research_validation'] = validation
                             
                             # Save research findings to database
                             # Format quantitative data for storage
@@ -917,7 +1145,9 @@ def main():
                                     pass
                             
                             # Store in session state for display (with validation metadata)
-                            research_data['_validation'] = validation
+                            # Only add research validation if not already enhanced validation
+                            if '_validation' not in research_data or not isinstance(research_data.get('_validation'), dict) or 'excel_validation' not in research_data.get('_validation', {}):
+                                research_data['_validation'] = validation
                             st.session_state[f'research_data_{deal_id}'] = research_data
                             st.success("✅ Research completed! Scroll down to see results.")
                             # Don't rerun here - let it display results immediately
@@ -960,9 +1190,44 @@ def main():
                 if research_data:
                     st.markdown("#### 📊 Research Results")
                     
-                    # Show validation status if available
+                    # Show enhanced validation if available
+                    enhanced_validation = research_data.get('_validation', {})
+                    cross_check = research_data.get('_cross_check', {})
+                    
+                    # Show Excel validation if available
+                    excel_validation = enhanced_validation.get('excel_validation')
+                    if excel_validation:
+                        confidence = excel_validation.get('confidence', 0)
+                        if confidence > 0.7:
+                            st.success(f"✅ Excel Data Quality: {confidence:.0%} confidence")
+                        elif confidence > 0.5:
+                            st.warning(f"⚠️ Excel Data Quality: {confidence:.0%} confidence")
+                        else:
+                            st.error(f"❌ Excel Data Quality: {confidence:.0%} confidence")
+                        
+                        if excel_validation.get('issues'):
+                            with st.expander("🔍 Excel Data Issues", expanded=False):
+                                for issue in excel_validation['issues']:
+                                    st.caption(f"• {issue}")
+                    
+                    # Show cross-check results
+                    if cross_check:
+                        if cross_check.get('matches'):
+                            st.success(f"✅ {len(cross_check['matches'])} fields match between Excel and Research")
+                        if cross_check.get('discrepancies'):
+                            st.warning(f"⚠️ {len(cross_check['discrepancies'])} discrepancies found")
+                            with st.expander("🔍 View Discrepancies", expanded=False):
+                                for disc in cross_check['discrepancies']:
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.markdown(f"**Excel:** {disc['excel']}")
+                                    with col2:
+                                        st.markdown(f"**Research:** {disc['research']}")
+                                    st.caption(f"💡 {disc['recommendation']}")
+                    
+                    # Show standard validation status if available
                     validation = research_data.get('_validation', {})
-                    if validation:
+                    if validation and not excel_validation:  # Only show if not already shown
                         quality_pct = validation.get('quality_score', 0) * 100
                         if validation.get('is_complete', False):
                             st.success(f"✅ Research Quality: {quality_pct:.0f}% Complete ({validation.get('complete_fields', 0)}/{validation.get('total_fields', 0)} fields)")
@@ -1026,19 +1291,21 @@ def main():
                                     st.metric("👥 Employees", employees)
                             
                             # Show all quantitative data in a table for reference
-                            with st.expander("📋 All Quantitative Data", expanded=False):
-                                quant_table_data = []
-                                for key, value in quantitative_data.items():
-                                    if value and value != "Not available":
-                                        label = key.replace('_', ' ').title()
-                                        quant_table_data.append({"Metric": label, "Value": value})
-                                
-                                if quant_table_data:
-                                    import pandas as pd
-                                    quant_df = pd.DataFrame(quant_table_data)
-                                    st.dataframe(quant_df, use_container_width=True, hide_index=True)
-                                else:
-                                    st.info("No quantitative data available. Enhanced search queries are working, but specific numbers weren't found in search results.")
+                            # Use markdown instead of nested expander (Streamlit doesn't allow nested expanders)
+                            st.divider()
+                            st.markdown("**📋 All Quantitative Data**")
+                            quant_table_data = []
+                            for key, value in quantitative_data.items():
+                                if value and value != "Not available":
+                                    label = key.replace('_', ' ').title()
+                                    quant_table_data.append({"Metric": label, "Value": value})
+                            
+                            if quant_table_data:
+                                import pandas as pd
+                                quant_df = pd.DataFrame(quant_table_data)
+                                st.dataframe(quant_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No quantitative data available. Enhanced search queries are working, but specific numbers weren't found in search results.")
                     else:
                         with st.expander("📊 Quantitative Data", expanded=False):
                             st.info("💡 Quantitative data extraction is enabled. Numbers will appear here when found in search results.")

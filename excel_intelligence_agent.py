@@ -1,6 +1,8 @@
 """
 Excel Intelligence Agent
-Intelligently scans Excel sheet to extract company information including industry, vertical, and funding stage
+Intelligently scans Excel sheet to extract company information like a VC analyst would.
+Understands various column naming conventions, extracts opportunity/exit scores, and finds stage data
+in columns like "First Financing Deal Type 2".
 """
 import pandas as pd
 import logging
@@ -33,6 +35,8 @@ class ExcelIntelligenceAgent:
             - location: Company location
             - revenue: Revenue information
             - vertical: Specific vertical/sub-industry
+            - opportunity_score: Opportunity score/metric
+            - exit_probability_score: Exit probability score/metric
         """
         self.logger.info(f"Extracting data for company: {company_name}")
         
@@ -43,7 +47,7 @@ class ExcelIntelligenceAgent:
             self.logger.warning(f"Company '{company_name}' not found in Excel sheet")
             return self._get_empty_data()
         
-        # Step 2: Intelligently extract all available fields
+        # Step 2: Intelligently extract all available fields (VC analyst approach)
         extracted_data = {
             'industry': self._extract_industry(company_row, df),
             'sector': self._extract_industry(company_row, df),  # Same as industry
@@ -52,6 +56,8 @@ class ExcelIntelligenceAgent:
             'description': self._extract_description(company_row, df),
             'location': self._extract_location(company_row, df),
             'revenue': self._extract_revenue(company_row, df),
+            'opportunity_score': self._extract_opportunity_score(company_row, df),
+            'exit_probability_score': self._extract_exit_probability_score(company_row, df),
         }
         
         # Log what was found
@@ -63,32 +69,61 @@ class ExcelIntelligenceAgent:
             self.logger.warning(f"Missing fields for {company_name}: {', '.join(missing_fields)}")
             # Log available columns to help debug
             self.logger.info(f"Available columns in Excel: {list(df.columns)}")
+            # Special logging for stage
+            if 'stage' in missing_fields:
+                self.logger.warning(f"⚠️ STAGE NOT FOUND for {company_name}")
+                self.logger.warning(f"Looking for: 'First Financing Deal Type 2'")
+                # Check if the column exists
+                for col in df.columns:
+                    col_lower = col.lower()
+                    if 'first' in col_lower and 'financing' in col_lower and 'deal' in col_lower and 'type' in col_lower:
+                        self.logger.warning(f"Found potential match: '{col}' - checking value...")
+                        stage_value = company_row.get(col, '')
+                        self.logger.warning(f"Value in '{col}': '{stage_value}'")
         
         return extracted_data
     
     def _find_company_row(self, company_name: str, df: pd.DataFrame) -> Optional[pd.Series]:
-        """Find company row using intelligent matching"""
-        if 'name' not in df.columns:
-            self.logger.error("'name' column not found in DataFrame")
+        """Find company row using intelligent matching - VC analyst approach"""
+        # VC analyst approach: be flexible with column names
+        name_column = None
+        name_columns_to_try = ['name', 'company', 'companies', 'company name', 'firm', 'organization', 'business name']
+        
+        # Find the name column
+        for col_name in name_columns_to_try:
+            if col_name in df.columns:
+                name_column = col_name
+                break
+        
+        # If still not found, look for any column containing 'name' or 'company'
+        if not name_column:
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'name' in col_lower or 'company' in col_lower:
+                    name_column = col
+                    break
+        
+        if not name_column:
+            self.logger.error(f"Name column not found. Available columns: {list(df.columns)}")
             return None
         
         company_name_clean = company_name.strip().lower()
         
         # Strategy 1: Exact match (case-insensitive)
-        exact_match = df[df['name'].str.strip().str.lower() == company_name_clean]
+        exact_match = df[df[name_column].str.strip().str.lower() == company_name_clean]
         if not exact_match.empty:
-            self.logger.info(f"Found exact match for '{company_name}'")
+            self.logger.info(f"Found exact match for '{company_name}' in column '{name_column}'")
             return exact_match.iloc[0]
         
         # Strategy 2: Partial match (company name contains search term or vice versa)
         for idx, row in df.iterrows():
-            row_name = str(row.get('name', '')).strip().lower()
+            row_name = str(row.get(name_column, '')).strip().lower()
             if company_name_clean in row_name or row_name in company_name_clean:
                 if len(row_name) > 3 and len(company_name_clean) > 3:  # Avoid false matches
-                    self.logger.info(f"Found partial match for '{company_name}': '{row['name']}'")
+                    self.logger.info(f"Found partial match for '{company_name}': '{row[name_column]}'")
                     return row
         
-        # Strategy 3: Fuzzy match (remove common words and match)
+        # Strategy 3: Fuzzy match (remove common words and match) - VC analyst approach
         company_name_words = set(re.findall(r'\w+', company_name_clean))
         company_name_words.discard('inc')
         company_name_words.discard('llc')
@@ -100,7 +135,7 @@ class ExcelIntelligenceAgent:
         
         if len(company_name_words) >= 2:  # Need at least 2 meaningful words
             for idx, row in df.iterrows():
-                row_name = str(row.get('name', '')).strip().lower()
+                row_name = str(row.get(name_column, '')).strip().lower()
                 row_words = set(re.findall(r'\w+', row_name))
                 row_words.discard('inc')
                 row_words.discard('llc')
@@ -113,7 +148,7 @@ class ExcelIntelligenceAgent:
                 # Check if significant words overlap
                 common_words = company_name_words.intersection(row_words)
                 if len(common_words) >= 2:
-                    self.logger.info(f"Found fuzzy match for '{company_name}': '{row['name']}' (common words: {common_words})")
+                    self.logger.info(f"Found fuzzy match for '{company_name}': '{row[name_column]}' (common words: {common_words})")
                     return row
         
         return None
@@ -186,9 +221,53 @@ class ExcelIntelligenceAgent:
         return ''
     
     def _extract_stage(self, row: pd.Series, df: pd.DataFrame) -> str:
-        """Extract funding stage from row"""
-        # Priority order for stage columns
+        """Extract funding stage from row - VC analyst approach"""
+        # CRITICAL: User specified "First Financing Deal Type 2" - check this FIRST with exact and flexible matching
+        # Try exact match first (case-insensitive, handle spaces)
+        target_column = None
+        
+        # Strategy 1: Exact match (case-insensitive, normalize spaces)
+        for col in df.columns:
+            col_normalized = ' '.join(col.lower().split())  # Normalize spaces
+            target_normalized = ' '.join('first financing deal type 2'.lower().split())
+            if col_normalized == target_normalized:
+                target_column = col
+                self.logger.info(f"Found exact match for 'First Financing Deal Type 2': '{col}'")
+                break
+        
+        # Strategy 2: Contains match (if exact didn't work)
+        if not target_column:
+            for col in df.columns:
+                col_lower = col.lower().strip()
+                # Check if column contains all key words
+                if 'first' in col_lower and 'financing' in col_lower and 'deal' in col_lower and 'type' in col_lower and '2' in col_lower:
+                    target_column = col
+                    self.logger.info(f"Found flexible match for 'First Financing Deal Type 2': '{col}'")
+                    break
+        
+        # Strategy 3: Try the exact column name as-is (in case it's exactly "First Financing Deal Type 2")
+        if not target_column and 'First Financing Deal Type 2' in df.columns:
+            target_column = 'First Financing Deal Type 2'
+            self.logger.info(f"Found exact column name 'First Financing Deal Type 2'")
+        
+        # If we found the target column, use it
+        if target_column:
+            value = row.get(target_column, '')
+            if pd.notna(value):
+                value_str = str(value).strip()
+                if value_str and value_str.lower() not in ['nan', 'none', 'n/a', '', 'null', 'undefined']:
+                    stage = self._normalize_stage(value_str)
+                    if stage:
+                        self.logger.info(f"✅ Extracted stage '{stage}' from '{target_column}'")
+                        return stage
+                    else:
+                        self.logger.warning(f"Found value '{value_str}' in '{target_column}' but normalization failed")
+        
+        # Fallback: Try other stage columns (if First Financing Deal Type 2 didn't work)
         stage_columns = [
+            'first financing deal type',
+            'financing deal type',
+            'deal type',
             'stage',
             'funding stage',
             'round',
@@ -202,8 +281,7 @@ class ExcelIntelligenceAgent:
         # Also check for columns containing these keywords (case-insensitive)
         for col in df.columns:
             col_lower = col.lower().strip()
-            # Check if column name contains stage-related keywords
-            if any(keyword in col_lower for keyword in ['stage', 'round', 'series', 'funding', 'financing', 'capital']):
+            if any(keyword in col_lower for keyword in ['stage', 'round', 'series', 'funding', 'financing', 'capital', 'deal type']):
                 if col not in stage_columns:
                     stage_columns.append(col)
         
@@ -211,20 +289,17 @@ class ExcelIntelligenceAgent:
         for col_name in stage_columns:
             if col_name in df.columns:
                 value = row.get(col_name, '')
-                # More robust checking
                 if pd.notna(value):
                     value_str = str(value).strip()
-                    # Check if it's a valid stage value
                     if value_str and value_str.lower() not in ['nan', 'none', 'n/a', '', 'null', 'undefined']:
-                        stage = value_str
-                        # Normalize stage names
-                        stage = self._normalize_stage(stage)
-                        if stage:  # Only return if normalization produced a valid result
+                        stage = self._normalize_stage(value_str)
+                        if stage:
                             self.logger.info(f"Found stage '{stage}' in column '{col_name}'")
                             return stage
         
         # If no stage found, log available columns for debugging
-        self.logger.warning(f"Stage not found. Available columns: {list(df.columns)}")
+        self.logger.warning(f"❌ Stage not found. Available columns: {list(df.columns)}")
+        self.logger.warning(f"Looking for columns containing: 'first financing deal type 2'")
         return ''
     
     def _normalize_stage(self, stage: str) -> str:
@@ -345,6 +420,67 @@ class ExcelIntelligenceAgent:
         
         return ''
     
+    def _extract_opportunity_score(self, row: pd.Series, df: pd.DataFrame) -> str:
+        """Extract opportunity score - VC analyst approach"""
+        # Look for opportunity score columns
+        opportunity_columns = [
+            'opportunity score',
+            'opportunity',
+            'opportunity probability',
+            'opportunity_score',
+            'opp score',
+        ]
+        
+        # Also check for columns containing opportunity keywords
+        for col in df.columns:
+            col_lower = col.lower().strip()
+            if any(keyword in col_lower for keyword in ['opportunity', 'opp score', 'opp_score']):
+                if col not in opportunity_columns:
+                    opportunity_columns.append(col)
+        
+        # Try each column
+        for col_name in opportunity_columns:
+            if col_name in df.columns:
+                value = row.get(col_name, '')
+                if pd.notna(value):
+                    value_str = str(value).strip()
+                    if value_str and value_str.lower() not in ['nan', 'none', 'n/a', '', 'null', 'undefined']:
+                        self.logger.info(f"Found opportunity score '{value_str}' in column '{col_name}'")
+                        return value_str
+        
+        return ''
+    
+    def _extract_exit_probability_score(self, row: pd.Series, df: pd.DataFrame) -> str:
+        """Extract exit probability score - VC analyst approach"""
+        # Look for exit probability score columns
+        exit_columns = [
+            'exit probability score',
+            'exit probability',
+            'exit prob',
+            'exit_probability_score',
+            'exit prob score',
+            'exit score',
+        ]
+        
+        # Also check for columns containing exit keywords
+        for col in df.columns:
+            col_lower = col.lower().strip()
+            if any(keyword in col_lower for keyword in ['exit', 'exit prob', 'exit_prob']):
+                if col not in exit_columns:
+                    exit_columns.append(col)
+        
+        # Try each column
+        for col_name in exit_columns:
+            if col_name in df.columns:
+                value = row.get(col_name, '')
+                if pd.notna(value):
+                    value_str = str(value).strip()
+                    if value_str and value_str.lower() not in ['nan', 'none', 'n/a', '', 'null', 'undefined']:
+                        self.logger.info(f"Found exit probability score '{value_str}' in column '{col_name}'")
+                        return value_str
+        
+        return ''
+    
     def _get_empty_data(self) -> Dict:
         """Return empty data structure"""
         return {
@@ -355,4 +491,6 @@ class ExcelIntelligenceAgent:
             'description': '',
             'location': '',
             'revenue': '',
+            'opportunity_score': '',
+            'exit_probability_score': '',
         }
