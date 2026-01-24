@@ -15,10 +15,11 @@ uvicorn==0.37.0
 
 # Vector embeddings & semantic search (for hybrid filter)
 sentence-transformers>=2.2.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0  # Pin to < 2.0 for ChromaDB compatibility
 
 # Document processing for RAG
-PyPDF2>=3.0.0  # PDF processing
+unstructured[all-docs]>=0.10.0  # Multi-format document processing (Word, Excel, PPT, PDF, Images, etc.)
+PyPDF2>=3.0.0  # PDF processing (fallback)
 markdown>=3.4.0  # Markdown processing (optional)
 
 # Web scraping for URL ingestion
@@ -28,3 +29,6 @@ lxml>=4.9.0  # HTML parser (faster than default)
 
 # Internet search for company research
 duckduckgo-search>=4.0.0  # Free internet search (optional)
+
+# Vector database for persistent knowledge base storage
+chromadb>=0.4.0  # Persistent vector store for VC knowledge base

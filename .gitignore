@@ -13,3 +13,6 @@ venv/
 .cache/
 *.cache
 cache/
+
+# Local vector DB (ChromaDB)
+vc_knowledge_db/

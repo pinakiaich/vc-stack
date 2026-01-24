@@ -1,6 +1,16 @@
 """
 Document Ingestion Service for RAG (Retrieval-Augmented Generation)
-Processes PDFs, markdown, text files, and web URLs for VC best practices knowledge base
+Processes PDFs, Word, Excel, PowerPoint, Images, Markdown, text files, and web URLs
+for VC best practices knowledge base
+
+Supports:
+- PDF (native and scanned with OCR)
+- Word (.docx, .doc)
+- Excel (.xlsx, .xls)
+- PowerPoint (.pptx, .ppt)
+- Images (PNG, JPG) with OCR
+- HTML, CSV, Markdown, Text
+- Web URLs
 """
 import logging
 import os
@@ -28,6 +38,14 @@ try:
     WEB_SCRAPING_AVAILABLE = True
 except ImportError:
     WEB_SCRAPING_AVAILABLE = False
+
+# Unstructured.io for advanced document processing
+try:
+    from unstructured.partition.auto import partition
+    from unstructured.chunking.title import chunk_by_title
+    UNSTRUCTURED_AVAILABLE = True
+except ImportError:
+    UNSTRUCTURED_AVAILABLE = False
 
 
 class DocumentIngestionService:
@@ -136,6 +154,18 @@ class DocumentIngestionService:
             return 'md'
         elif ext == '.txt':
             return 'txt'
+        elif ext in ['.docx', '.doc']:
+            return 'docx'
+        elif ext in ['.xlsx', '.xls']:
+            return 'xlsx'
+        elif ext in ['.pptx', '.ppt']:
+            return 'pptx'
+        elif ext in ['.png', '.jpg', '.jpeg', '.gif']:
+            return 'image'
+        elif ext == '.html':
+            return 'html'
+        elif ext == '.csv':
+            return 'csv'
         else:
             # Default to text
             self.logger.warning(f"Unknown file type: {ext}, treating as text")
@@ -143,7 +173,17 @@ class DocumentIngestionService:
     
     def _read_file(self, file_path: Path, doc_type: str) -> str:
         """Read file content based on type"""
-        if doc_type == 'pdf':
+        # Use Unstructured.io for advanced formats if available
+        if UNSTRUCTURED_AVAILABLE and doc_type in ['docx', 'xlsx', 'pptx', 'image', 'html', 'csv']:
+            return self._read_with_unstructured(file_path, doc_type)
+        elif UNSTRUCTURED_AVAILABLE and doc_type == 'pdf':
+            # Try Unstructured.io first for better PDF handling (scanned, tables)
+            try:
+                return self._read_with_unstructured(file_path, doc_type)
+            except Exception as e:
+                self.logger.warning(f"Unstructured.io PDF processing failed, falling back to PyPDF2: {e}")
+                return self._read_pdf(file_path)
+        elif doc_type == 'pdf':
             return self._read_pdf(file_path)
         elif doc_type == 'md':
             return self._read_markdown(file_path)
@@ -152,8 +192,45 @@ class DocumentIngestionService:
         else:
             return self._read_text(file_path)  # Default
     
+    def _read_with_unstructured(self, file_path: Path, doc_type: str) -> str:
+        """Read file using Unstructured.io (supports multiple formats)"""
+        if not UNSTRUCTURED_AVAILABLE:
+            raise ImportError(
+                "Unstructured.io not available. Install with: pip install 'unstructured[all-docs]'"
+            )
+        
+        try:
+            # Use Unstructured.io to partition the document
+            # This handles: PDF, Word, Excel, PowerPoint, Images, HTML, CSV, etc.
+            elements = partition(
+                filename=str(file_path),
+                strategy="hi_res",  # High resolution for better accuracy
+                extract_tables=True,  # Extract tables
+                extract_images_in_pdf=True,  # Extract images from PDFs
+            )
+            
+            # Combine all elements into text
+            text_parts = []
+            for element in elements:
+                element_text = str(element)
+                if element_text.strip():
+                    text_parts.append(element_text)
+            
+            combined_text = '\n\n'.join(text_parts)
+            
+            if not combined_text.strip():
+                self.logger.warning(f"Unstructured.io extracted no text from {file_path}")
+                return ""
+            
+            self.logger.info(f"Unstructured.io processed {file_path.name}: {len(elements)} elements")
+            return combined_text
+            
+        except Exception as e:
+            self.logger.error(f"Error reading {doc_type} file {file_path} with Unstructured.io: {e}")
+            raise
+    
     def _read_pdf(self, file_path: Path) -> str:
-        """Read PDF file"""
+        """Read PDF file using PyPDF2 (fallback method)"""
         if not PDF_AVAILABLE:
             raise ImportError("PyPDF2 not available. Install with: pip install PyPDF2")
         

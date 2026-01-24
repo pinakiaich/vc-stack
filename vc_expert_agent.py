@@ -19,18 +19,21 @@ except ImportError:
 class VCExpertAgent:
     """AI agent with VC expertise for analyzing investment opportunities"""
     
-    def __init__(self, config, document_store=None):
+    def __init__(self, config, document_store=None, vc_knowledge_agent=None):
         """
         Initialize VC Expert Agent
         
         Args:
             config: Configuration object
             document_store: Optional DocumentStore for RAG (Retrieval-Augmented Generation)
+            vc_knowledge_agent: Optional VCKnowledgeTrainingAgent for agent training (not RAG context)
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.client = None
         self.document_store = document_store
+        self.vc_knowledge_agent = vc_knowledge_agent
+        self._training_principles = None  # Cached training principles
         self._setup_openai()
     
     def _setup_openai(self):
@@ -130,8 +133,8 @@ class VCExpertAgent:
             raise
     
     def _get_vc_expert_system_prompt(self) -> str:
-        """System prompt defining the VC expert persona"""
-        return """You are a seasoned venture capital analyst with 15+ years of experience in tech investments, specializing in AI/ML, B2B SaaS, and growth-stage companies.
+        """System prompt defining the VC expert persona, enhanced with training from knowledge base"""
+        base_prompt = """You are a seasoned venture capital analyst with 15+ years of experience in tech investments, specializing in AI/ML, B2B SaaS, and growth-stage companies.
 
 Your expertise includes:
 - Evaluating company-market fit and investment potential
@@ -156,19 +159,53 @@ CRITICAL: When analyzing companies:
 - Double-check your math: 500 is NOT between 10 and 20
 - Be precise with numbers - if you see "$15M" in the data, use 15, not 500
 
+CRITICAL FIELD COMPLETION REQUIREMENTS:
+- NEVER respond with "information can't be found", "not available", "N/A", or similar empty responses
+- ALWAYS provide meaningful analysis, inference, or professional assessment for every field
+- If specific data is missing, make reasonable inferences based on company name, industry, available data, and industry benchmarks
+- Use phrases like "Based on available information...", "Typical for this stage...", "Industry analysis suggests..."
+- Every field MUST contain substantive content (minimum 2-3 sentences)
+- It's better to provide an informed inference than to say "can't find" - a professional VC analyst always provides value
+
 You analyze companies against specific investment criteria and explain matches like you would in a partner meeting or IC (Investment Committee) memo."""
+        
+        # Enhance with training principles from knowledge base (if available)
+        if self.vc_knowledge_agent and self.vc_knowledge_agent.knowledge_base_exists():
+            # Get or generate training principles (cache after first generation)
+            if self._training_principles is None:
+                self.logger.info("Generating training principles from VC knowledge base...")
+                self._training_principles = self.vc_knowledge_agent.generate_training_principles()
+            
+            if self._training_principles:
+                base_prompt += f"""
+
+---
+
+## Training from VC Best Practices Knowledge Base
+
+You have been trained on VC industry best practices, evaluation frameworks, and investment principles. Apply these learnings when analyzing companies:
+
+{self._training_principles}
+
+Use these principles to guide your analysis, but always base your conclusions on the actual company data provided."""
+        
+        return base_prompt
     
     def _build_expert_prompt(self, firms: List[Dict], criteria: str) -> str:
-        """Build analysis prompt with ALL firm data and investment criteria"""
+        """Build analysis prompt with ALL firm data and investment criteria
         
-        # Retrieve relevant document context if RAG is enabled
+        Note: VC knowledge base is used for training (system prompt), not as RAG context here.
+        The agent has learned VC best practices and applies them automatically.
+        """
+        
+        # Retrieve relevant document context if RAG is enabled (for user-uploaded documents only)
         rag_context = ""
         if self.document_store:
             try:
                 relevant_chunks = self.document_store.retrieve(criteria, top_k=5, min_similarity=0.3)
                 if relevant_chunks:
                     rag_context = self.document_store.format_context(relevant_chunks, max_chars=1500)
-                    self.logger.info(f"RAG: Retrieved {len(relevant_chunks)} relevant document chunks")
+                    self.logger.info(f"RAG: Retrieved {len(relevant_chunks)} relevant document chunks (user-uploaded docs)")
             except Exception as e:
                 self.logger.warning(f"RAG retrieval failed: {e}, proceeding without document context")
         
@@ -256,6 +293,7 @@ For each company, provide:
    - If company EXCEEDS limits, explicitly state: "EXCEEDS maximum [metric] of [limit]" or "BELOW minimum [metric] of [limit]"
    - Stage appropriateness, competitive positioning, and market validation
    - Key strengths or concerns based on ALL available PitchBook data
+   - NEVER say "information can't be found" - always provide analysis based on available data or reasonable inferences
 
 **CRITICAL VALIDATION RULES:**
 Before assigning a score, you MUST validate that numbers actually fall within the specified ranges:
@@ -266,7 +304,7 @@ Before assigning a score, you MUST validate that numbers actually fall within th
    - If criteria says "revenue $10M-$20M" and company has $500M → ❌ INVALID (500 is NOT between 10 and 20) → Score: 0
    - If criteria says "valuation $200M-$400M" and company has $500M → ❌ INVALID (500 exceeds 400) → Score: 0
 3. **DO NOT make up numbers or use wrong values** - Extract the ACTUAL value from the company data provided
-4. **If you cannot find the actual number, state "Not available" and score accordingly**
+4. **If you cannot find the actual number, provide analysis based on available context or industry benchmarks - NEVER say "Not available" or "can't find"**
 
 **FILTERING LOGIC EXAMPLES:**
 - Criteria: "revenue $10M-$20M"

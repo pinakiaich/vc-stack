@@ -70,44 +70,298 @@ def main():
     # VC Knowledge Base Section
     st.markdown("### 🧠 VC Knowledge Base")
     
-    # Check if VC knowledge base exists
+    # Try to load existing knowledge base on startup
+    if 'vc_knowledge_agent' not in st.session_state:
+        try:
+            from vc_knowledge_training_agent import VCKnowledgeTrainingAgent
+            from embedding_service import EmbeddingService
+            
+            embedding_service = EmbeddingService(config, use_openai=False)
+            training_agent = VCKnowledgeTrainingAgent(config, embedding_service=embedding_service)
+            
+            # Check if knowledge base exists
+            if training_agent.knowledge_base_exists():
+                st.session_state['vc_knowledge_agent'] = training_agent
+                st.success("✅ VC Knowledge Base Loaded from disk")
+                st.caption(f"📚 {training_agent.document_store.size()} chunks ready for enhanced research")
+            else:
+                st.info("ℹ️ VC Knowledge Base not found")
+                st.caption("Build knowledge base for enhanced research with VC industry context")
+        except Exception as e:
+            st.warning(f"⚠️ Could not check for existing knowledge base: {e}")
+    
+    # Check if VC knowledge base is loaded
     vc_knowledge_agent = st.session_state.get('vc_knowledge_agent', None)
     
     if vc_knowledge_agent:
-        st.success("✅ VC Knowledge Base Loaded")
-        st.caption(f"📚 Knowledge base ready for enhanced research")
-    else:
-        st.info("ℹ️ VC Knowledge Base not loaded")
-        st.caption("Build knowledge base for enhanced research with VC industry context")
+        # Show status and options
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.success("✅ VC Knowledge Base Loaded")
+            total_chunks = vc_knowledge_agent.document_store.size()
+            st.caption(f"📚 {total_chunks} chunks ready for enhanced research")
+        with col2:
+            if st.button("🔄 Rebuild", help="Rebuild the knowledge base (will take 10-15 minutes)"):
+                # Clear session state to trigger rebuild UI
+                del st.session_state['vc_knowledge_agent']
+                st.rerun()
         
-        if st.button("🔨 Build VC Knowledge Base", help="This will take 10-15 minutes"):
-            with st.spinner("🔍 Collecting VC industry knowledge... This may take 10-15 minutes"):
-                try:
-                    from vc_data_search_agent import VCDataSearchAgent
-                    from vc_knowledge_training_agent import VCKnowledgeTrainingAgent
-                    from embedding_service import EmbeddingService
+        # Rebuild with custom sources option
+        with st.expander("🔄 Rebuild Options", expanded=False):
+            st.markdown("**Add or update sources in the knowledge base:**")
+            
+            custom_urls_input = st.text_area(
+                "Add custom URLs (one per line)",
+                placeholder="https://a16z.com/best-practices\nhttps://your-internal-wiki.com/vc-guide",
+                help="Enter URLs to add to the knowledge base. These will be scraped and added.",
+                height=80,
+                key="rebuild_custom_urls"
+            )
+            
+            # Parse URLs (don't store in same key as widget)
+            rebuild_custom_urls_parsed = []
+            if custom_urls_input:
+                urls = [url.strip() for url in custom_urls_input.split('\n') if url.strip()]
+                valid_urls = [url for url in urls if url.startswith(('http://', 'https://'))]
+                rebuild_custom_urls_parsed = valid_urls
+                if valid_urls:
+                    st.info(f"✅ {len(valid_urls)} URL(s) will be added")
+            
+            # Store parsed URLs in a different key
+            st.session_state['rebuild_custom_urls_parsed'] = rebuild_custom_urls_parsed
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                max_items = st.number_input("Max items to collect", min_value=10, max_value=200, value=50, step=10, key="rebuild_max_items")
+            with col2:
+                if st.button("🔄 Rebuild with Custom Sources", type="primary", use_container_width=True):
+                    # Store rebuild flag and clear agent
+                    st.session_state['rebuild_knowledge_base'] = True
+                    # Get parsed URLs and max items (read from widget, don't modify widget keys)
+                    st.session_state['rebuild_custom_urls'] = st.session_state.get('rebuild_custom_urls_parsed', [])
+                    # Read max_items from the widget's session state (it's automatically stored there)
+                    st.session_state['rebuild_max_items_value'] = st.session_state.get('rebuild_max_items', max_items)
+                    del st.session_state['vc_knowledge_agent']
+                    st.rerun()
+    else:
+        # Step 1: Automatic VC Research (VCDataSearchAgent)
+        # Check if research has been collected
+        vc_research_collected = st.session_state.get('vc_research_collected', False)
+        vc_research_items = st.session_state.get('vc_research_items', [])
+        vc_research_count = st.session_state.get('vc_research_count', 0)
+        
+        if not vc_research_collected:
+            # Step 1: Start Automatic Research
+            st.markdown("#### 🔍 Step 1: Automatic VC Research")
+            st.caption("The VC Research Agent will automatically collect VC knowledge from blogs, publications, and industry sources.")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                max_research_items = st.number_input(
+                    "Max items to research", 
+                    min_value=10, 
+                    max_value=200, 
+                    value=50, 
+                    step=10, 
+                    help="More items = longer research time (5-10 minutes)",
+                    key="max_research_items"
+                )
+            with col2:
+                if st.button("🔍 Start VC Research", type="primary", use_container_width=True):
+                    with st.spinner("🔍 VC Research Agent is collecting VC knowledge... This may take 5-10 minutes"):
+                        try:
+                            from vc_data_search_agent import VCDataSearchAgent
+                            
+                            search_agent = VCDataSearchAgent()
+                            
+                            # Collect VC knowledge (automatic research only, no custom URLs yet)
+                            research_items = search_agent.collect_vc_knowledge_base(
+                                max_items=max_research_items,
+                                custom_urls=None,  # No custom URLs in first step
+                                scrape_custom_urls=False
+                            )
+                            
+                            if research_items:
+                                # Store in session state
+                                st.session_state['vc_research_collected'] = True
+                                st.session_state['vc_research_items'] = research_items
+                                st.session_state['vc_research_count'] = len(research_items)
+                                
+                                st.success(f"✅ Research Complete! Collected {len(research_items)} VC knowledge items")
+                                st.rerun()
+                            else:
+                                st.warning("⚠️ No knowledge items collected. Check internet connection.")
+                        except Exception as e:
+                            st.error(f"❌ Error during research: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+        
+        elif vc_research_collected:
+            # Step 2: Show research results and ask for custom URLs
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown("#### ✅ Step 1 Complete: VC Research Results")
+                st.success(f"✅ Collected {vc_research_count} VC knowledge items from automatic research")
+            with col2:
+                if st.button("🔄 Reset Research", help="Start over with new research"):
+                    del st.session_state['vc_research_collected']
+                    del st.session_state['vc_research_items']
+                    del st.session_state['vc_research_count']
+                    st.rerun()
+            
+            # Show sample of research items
+            with st.expander(f"📊 View Research Results ({vc_research_count} items)", expanded=False):
+                if vc_research_items:
+                    # Show first 10 items as sample
+                    sample_items = vc_research_items[:10]
+                    for i, item in enumerate(sample_items, 1):
+                        title = item.get('title', 'Untitled')
+                        url = item.get('url', 'No URL')
+                        source_type = item.get('source_type', 'unknown')
+                        st.markdown(f"**{i}.** {title}")
+                        st.caption(f"   Source: {url} ({source_type})")
                     
-                    # Step 1: Search for VC knowledge
+                    if len(vc_research_items) > 10:
+                        st.caption(f"... and {len(vc_research_items) - 10} more items")
+            
+            st.divider()
+            
+            # Step 2: Ask for custom URLs
+            st.markdown("#### 📎 Step 2: Add Custom Websites/Sources (Optional)")
+            st.caption("Do you have any specific websites, articles, or internal documentation you'd like to add?")
+            
+            custom_urls_input = st.text_area(
+                "Enter URLs (one per line)",
+                placeholder="https://a16z.com/best-practices\nhttps://sequoiacap.com/insights\nhttps://your-internal-wiki.com/vc-guide",
+                help="Enter one URL per line. The system will scrape content from these URLs and add to the research.",
+                height=120,
+                key="custom_urls_input"
+            )
+            
+            # Parse URLs
+            custom_urls = []
+            if custom_urls_input:
+                urls = [url.strip() for url in custom_urls_input.split('\n') if url.strip()]
+                # Validate URLs
+                valid_urls = []
+                invalid_urls = []
+                for url in urls:
+                    if url.startswith(('http://', 'https://')):
+                        valid_urls.append(url)
+                    else:
+                        invalid_urls.append(url)
+                
+                if invalid_urls:
+                    st.warning(f"⚠️ Invalid URLs (must start with http:// or https://): {', '.join(invalid_urls[:3])}")
+                
+                custom_urls = valid_urls
+                if custom_urls:
+                    st.info(f"✅ {len(custom_urls)} valid URL(s) will be scraped and added")
+            
+            st.divider()
+            
+            # Step 3: Build Knowledge Base
+            st.markdown("#### 🧠 Step 3: Build Knowledge Base")
+            st.caption("Train the knowledge base with all collected research (automatic + custom sources)")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                force_rebuild = st.checkbox("Force rebuild (ignore existing)", value=False, help="Rebuild even if knowledge base exists")
+            with col2:
+                if st.button("🔨 Build Knowledge Base", type="primary", use_container_width=True):
+                    # This will be handled below
+                    st.session_state['build_knowledge_base'] = True
+                    st.session_state['build_custom_urls'] = custom_urls
+                    st.session_state['build_force_rebuild'] = force_rebuild
+                    st.rerun()
+        
+        # Check if build was triggered
+        if st.session_state.get('build_knowledge_base', False):
+            custom_urls = st.session_state.get('build_custom_urls', [])
+            force_rebuild = st.session_state.get('build_force_rebuild', False)
+            vc_research_items = st.session_state.get('vc_research_items', [])
+            
+            # Clear build flag
+            del st.session_state['build_knowledge_base']
+            
+            # Build the knowledge base
+            try:
+                from vc_data_search_agent import VCDataSearchAgent
+                from vc_knowledge_training_agent import VCKnowledgeTrainingAgent
+                from embedding_service import EmbeddingService
+                
+                # Show progress
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Combine research items with custom URLs
+                all_knowledge_items = list(vc_research_items)  # Start with automatic research
+                
+                # Step 1: Scrape custom URLs if provided
+                if custom_urls:
+                    status_text.text(f"🌐 Scraping {len(custom_urls)} custom URL(s)...")
+                    progress_bar.progress(30)
+                    
                     search_agent = VCDataSearchAgent()
-                    knowledge_items = search_agent.collect_vc_knowledge_base(max_items=50)  # Start with 50 for faster testing
+                    for url in custom_urls:
+                        try:
+                            scraped_content = search_agent.scrape_vc_blog(url)
+                            if scraped_content:
+                                scraped_content['source_type'] = 'user_specified'
+                                all_knowledge_items.append(scraped_content)
+                                status_text.text(f"✅ Scraped: {url}")
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not scrape {url}: {e}")
+                            continue
+                else:
+                    status_text.text("📚 Processing collected research...")
+                    progress_bar.progress(30)
+                
+                if all_knowledge_items:
+                    # Step 2: Train knowledge base
+                    status_text.text("🧠 Training knowledge base (generating embeddings)...")
+                    progress_bar.progress(60)
                     
-                    if knowledge_items:
-                        # Step 2: Train knowledge base
-                        embedding_service = EmbeddingService(config, use_openai=False)
-                        training_agent = VCKnowledgeTrainingAgent(config, embedding_service=embedding_service)
-                        stats = training_agent.train_on_vc_data(knowledge_items)
-                        
+                    embedding_service = EmbeddingService(config, use_openai=False)
+                    training_agent = VCKnowledgeTrainingAgent(config, embedding_service=embedding_service)
+                    stats = training_agent.train_on_vc_data(all_knowledge_items, force_rebuild=force_rebuild)
+                    
+                    progress_bar.progress(100)
+                    status_text.text("✅ Complete!")
+                    
+                    # Check if build was skipped
+                    if stats.get('status') == 'skipped':
+                        st.info(f"ℹ️ {stats.get('message', 'Knowledge base already exists')}")
+                        st.caption(f"Found {stats.get('total_chunks', 0)} existing chunks. Check 'Force rebuild' to rebuild.")
+                    else:
                         # Store in session state
                         st.session_state['vc_knowledge_agent'] = training_agent
                         
+                        # Clear research state (already used)
+                        del st.session_state['vc_research_collected']
+                        del st.session_state['vc_research_items']
+                        del st.session_state['vc_research_count']
+                        
                         st.success(f"✅ VC Knowledge Base Built!")
-                        st.caption(f"Processed {stats['processed']} items, created {stats['total_chunks']} chunks")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ No knowledge items collected. Check internet connection.")
-                except Exception as e:
-                    st.error(f"❌ Error building knowledge base: {e}")
-                    st.caption("You can continue without it - standard research will still work")
+                        
+                        # Show breakdown
+                        auto_count = len([item for item in all_knowledge_items if item.get('source_type') != 'user_specified'])
+                        custom_count = len([item for item in all_knowledge_items if item.get('source_type') == 'user_specified'])
+                        
+                        st.caption(f"📊 Processed {stats.get('processed', 0)} items, created {stats.get('total_chunks', 0)} chunks")
+                        st.caption(f"   • {auto_count} from automatic VC research")
+                        if custom_count > 0:
+                            st.caption(f"   • {custom_count} from your custom sources")
+                        st.caption(f"💾 Saved to: {training_agent.db_path}")
+                    
+                    st.rerun()
+                else:
+                    st.warning("⚠️ No knowledge items to build with. Please run research first.")
+            except Exception as e:
+                st.error(f"❌ Error building knowledge base: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.caption("You can continue without it - standard research will still work")
     
     st.divider()
     
@@ -120,7 +374,9 @@ def main():
         st.session_state.deal_id = None
     
     # Initialize AI Filter (will use fallback if no API key)
-    ai_filter = AIFilter(config)
+    # Pass VC knowledge agent for training the expert agent (not for RAG context)
+    vc_knowledge_agent = st.session_state.get('vc_knowledge_agent', None)
+    ai_filter = AIFilter(config, vc_knowledge_agent=vc_knowledge_agent)
     
     # Backend API URL (default to localhost)
     API_BASE_URL = "http://localhost:8000"
@@ -171,6 +427,8 @@ def main():
                                 if chunks:
                                     # Initialize embedding service and document store if needed
                                     if st.session_state.document_store is None:
+                                        # Import locally to avoid any scoping issues
+                                        from embedding_service import EmbeddingService
                                         embedding_service = EmbeddingService(config, use_openai=False, cache_service=ai_filter.cache_service)
                                         st.session_state.document_store = DocumentStore(embedding_service)
                                     
@@ -237,6 +495,8 @@ def main():
                             if chunks:
                                 # Initialize embedding service and document store if needed
                                 if st.session_state.document_store is None:
+                                    # Import locally to avoid any scoping issues
+                                    from embedding_service import EmbeddingService
                                     embedding_service = EmbeddingService(config, use_openai=False, cache_service=ai_filter.cache_service)
                                     st.session_state.document_store = DocumentStore(embedding_service)
                                 

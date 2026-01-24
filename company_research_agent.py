@@ -8,6 +8,7 @@ from typing import Dict, Optional, List
 import requests
 from bs4 import BeautifulSoup
 from config import Config
+from memo_field_validator import MemoFieldValidator
 
 # Try to import DuckDuckGo search (optional)
 try:
@@ -540,6 +541,9 @@ Return ONLY valid JSON, no additional text. Ensure ALL fields have substantial c
             
             self.logger.info(f"Research synthesis complete with quantitative data: {sum(1 for v in research_data.get('quantitative_data', {}).values() if v and v != 'Not available')} metrics found")
             
+            # Validate and fill empty fields using memo validator
+            research_data = self._validate_research_fields(research_data, company_name, additional_info)
+            
             return research_data
             
         except json.JSONDecodeError as e:
@@ -559,6 +563,10 @@ Return ONLY valid JSON, no additional text. Ensure ALL fields have substantial c
                 for field in required_fields:
                     if field not in research_data:
                         research_data[field] = "Not available"
+                
+                # Validate and fill empty fields using memo validator
+                research_data = self._validate_research_fields(research_data, company_name, additional_info)
+                
                 return research_data
             except:
                 self.logger.error("JSON fix failed, falling back to basic mode")
@@ -568,6 +576,64 @@ Return ONLY valid JSON, no additional text. Ensure ALL fields have substantial c
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return self._synthesize_basic(company_name, search_results, additional_info)
+    
+    def _validate_research_fields(
+        self,
+        research_data: Dict,
+        company_name: str,
+        additional_info: Optional[Dict] = None
+    ) -> Dict:
+        """
+        Validate and fill empty research fields using memo validator
+        
+        Args:
+            research_data: Research data dictionary
+            company_name: Company name
+            additional_info: Additional company information
+            
+        Returns:
+            Validated research data with all fields populated
+        """
+        try:
+            validator = MemoFieldValidator()
+            
+            # Prepare company data for validator
+            company_data = {
+                "name": company_name,
+                "industry": research_data.get('industry', additional_info.get('industry', 'technology') if additional_info else 'technology'),
+                "description": research_data.get('company_background', '')[:200] if research_data.get('company_background') else '',
+            }
+            
+            # Add any additional info
+            if additional_info:
+                company_data.update({
+                    k: v for k, v in additional_info.items() 
+                    if k in ['revenue', 'stage', 'location', 'sector']
+                })
+            
+            # Map research fields to memo fields for validation
+            memo_data = {
+                'company_background': research_data.get('company_background', ''),
+                'founder_profile': research_data.get('founder_profile', ''),
+                'competitive_landscape': research_data.get('competition', ''),
+                'market_opportunity': research_data.get('industry_background', ''),
+            }
+            
+            # Validate memo fields
+            validated_memo = validator.validate_and_fill_memo(memo_data, company_data)
+            
+            # Map back to research data structure
+            research_data['company_background'] = validated_memo.get('company_background', research_data.get('company_background', ''))
+            research_data['founder_profile'] = validated_memo.get('founder_profile', research_data.get('founder_profile', ''))
+            research_data['competition'] = validated_memo.get('competitive_landscape', research_data.get('competition', ''))
+            research_data['industry_background'] = validated_memo.get('market_opportunity', research_data.get('industry_background', ''))
+            
+            self.logger.info("Research fields validated and filled with intelligent defaults")
+            
+        except Exception as e:
+            self.logger.warning(f"Field validation failed: {e}, using original research data")
+        
+        return research_data
     
     def _synthesize_basic(
         self,
@@ -603,7 +669,7 @@ Return ONLY valid JSON, no additional text. Ensure ALL fields have substantial c
                         country = match.group(1)
                         break
         
-        return {
+        research_data = {
             "company_name": company_name,
             "country_of_incorporation": country,
             "industry": industry if industry != 'Unknown' else "Not available",
@@ -612,3 +678,8 @@ Return ONLY valid JSON, no additional text. Ensure ALL fields have substantial c
             "founder_profile": "Founder information not available in basic mode. Please configure OpenAI API key for detailed research.",
             "competition": "Competitive information not available in basic mode. Please configure OpenAI API key for detailed research."
         }
+        
+        # Validate and fill empty fields using memo validator
+        research_data = self._validate_research_fields(research_data, company_name, additional_info)
+        
+        return research_data

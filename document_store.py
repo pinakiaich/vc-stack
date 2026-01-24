@@ -1,8 +1,10 @@
 """
 Document Vector Store for RAG (Retrieval-Augmented Generation)
 Stores and retrieves document chunks for context injection
+Supports both in-memory and persistent (ChromaDB) storage
 """
 import logging
+import os
 from typing import List, Dict, Optional, Tuple
 import numpy as np
 from embedding_service import EmbeddingService
@@ -14,23 +16,65 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+try:
+    import chromadb
+    from chromadb.config import Settings
+    CHROMADB_AVAILABLE = True
+except ImportError:
+    CHROMADB_AVAILABLE = False
+
 
 class DocumentStore:
-    """Vector store for document chunks with RAG retrieval"""
+    """Vector store for document chunks with RAG retrieval
     
-    def __init__(self, embedding_service: EmbeddingService):
+    Supports both in-memory and persistent (ChromaDB) storage.
+    If db_path is provided and ChromaDB is available, uses persistent storage.
+    Otherwise, falls back to in-memory storage.
+    """
+    
+    def __init__(self, embedding_service: EmbeddingService, db_path: Optional[str] = None, collection_name: str = "documents"):
         """
         Initialize document store
         
         Args:
             embedding_service: EmbeddingService for generating document embeddings
+            db_path: Optional path to ChromaDB database (if None, uses in-memory)
+            collection_name: Name of ChromaDB collection (default: "documents")
         """
         self.embedding_service = embedding_service
         self.logger = logging.getLogger(__name__)
+        self.db_path = db_path
+        self.collection_name = collection_name
+        self.use_persistence = db_path is not None and CHROMADB_AVAILABLE
         
-        # Store document chunks with embeddings
+        # In-memory storage (fallback or when persistence disabled)
         self._chunks: List[Dict] = []  # List of {text, embedding, metadata}
         self._vectors: Optional[np.ndarray] = None  # Stacked embeddings matrix
+        
+        # Persistent storage (ChromaDB)
+        self._chroma_client = None
+        self._chroma_collection = None
+        
+        if self.use_persistence:
+            try:
+                # Create persistent ChromaDB client
+                os.makedirs(db_path, exist_ok=True)
+                self._chroma_client = chromadb.PersistentClient(
+                    path=db_path,
+                    settings=Settings(anonymized_telemetry=False)
+                )
+                self._chroma_collection = self._chroma_client.get_or_create_collection(
+                    name=collection_name,
+                    metadata={"hnsw:space": "cosine"}  # Cosine similarity
+                )
+                self.logger.info(f"Initialized persistent document store at {db_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize ChromaDB, falling back to in-memory: {e}")
+                self.use_persistence = False
+        else:
+            if db_path and not CHROMADB_AVAILABLE:
+                self.logger.warning("ChromaDB not available. Install with: pip install chromadb. Using in-memory storage.")
+            self.logger.info("Using in-memory document store")
     
     def add_documents(self, chunks: List[Dict]) -> None:
         """
@@ -50,7 +94,40 @@ class DocumentStore:
         # Generate embeddings in batch
         embeddings = self.embedding_service.embed_batch(texts)
         
-        # Combine chunks with embeddings
+        if self.use_persistence and self._chroma_collection:
+            # Store in ChromaDB (persistent)
+            try:
+                # Prepare data for ChromaDB
+                ids = []
+                documents = []
+                metadatas = []
+                embedding_list = []
+                
+                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                    # Create unique ID
+                    chunk_id = f"{self.collection_name}_{i}_{hash(chunk['text'])}"
+                    ids.append(chunk_id)
+                    documents.append(chunk['text'])
+                    metadatas.append({
+                        **chunk.get('metadata', {}),
+                        'chunk_index': chunk.get('chunk_index', 0)
+                    })
+                    embedding_list.append(embedding.tolist() if isinstance(embedding, np.ndarray) else embedding)
+                
+                # Add to ChromaDB collection
+                self._chroma_collection.add(
+                    ids=ids,
+                    documents=documents,
+                    embeddings=embedding_list,
+                    metadatas=metadatas
+                )
+                self.logger.info(f"Added {len(chunks)} chunks to persistent store (total: {self._chroma_collection.count()})")
+            except Exception as e:
+                self.logger.error(f"Error adding to ChromaDB: {e}, falling back to in-memory")
+                self.use_persistence = False
+                # Fall through to in-memory storage
+        
+        # Also store in-memory (for backward compatibility and fast access)
         for chunk, embedding in zip(chunks, embeddings):
             chunk_with_embedding = {
                 'text': chunk['text'],
@@ -63,7 +140,8 @@ class DocumentStore:
         # Rebuild vectors matrix
         self._rebuild_vectors()
         
-        self.logger.info(f"Added {len(chunks)} chunks to document store (total: {len(self._chunks)})")
+        if not self.use_persistence:
+            self.logger.info(f"Added {len(chunks)} chunks to document store (total: {len(self._chunks)})")
     
     def retrieve(
         self, 
@@ -82,6 +160,43 @@ class DocumentStore:
         Returns:
             List of relevant chunks with text, metadata, and similarity score
         """
+        # Try persistent storage first
+        if self.use_persistence and self._chroma_collection:
+            try:
+                # Generate query embedding
+                query_embedding = self.embedding_service.embed_text(query)
+                
+                # Query ChromaDB
+                results = self._chroma_collection.query(
+                    query_embeddings=[query_embedding.tolist() if isinstance(query_embedding, np.ndarray) else query_embedding],
+                    n_results=top_k
+                )
+                
+                # Format results
+                formatted_results = []
+                if results['documents'] and len(results['documents']) > 0:
+                    for i, doc in enumerate(results['documents'][0]):
+                        # ChromaDB returns distance, convert to similarity
+                        distance = results['distances'][0][i] if results['distances'] else 0.0
+                        similarity = 1.0 - distance  # Cosine distance to similarity
+                        
+                        if similarity >= min_similarity:
+                            formatted_results.append({
+                                'text': doc,
+                                'metadata': results['metadatas'][0][i] if results['metadatas'] else {},
+                                'similarity': similarity
+                            })
+                
+                if formatted_results:
+                    self.logger.info(
+                        f"Retrieved {len(formatted_results)} relevant chunks from persistent store "
+                        f"(top similarity: {formatted_results[0]['similarity']:.3f})"
+                    )
+                    return formatted_results
+            except Exception as e:
+                self.logger.warning(f"Error querying ChromaDB: {e}, falling back to in-memory")
+        
+        # Fallback to in-memory storage
         if not self._chunks or self._vectors is None:
             self.logger.warning("Document store is empty")
             return []
@@ -166,31 +281,77 @@ class DocumentStore:
         """Clear all documents from the store"""
         self._chunks = []
         self._vectors = None
+        
+        # Clear persistent store
+        if self.use_persistence and self._chroma_collection:
+            try:
+                # Delete collection and recreate
+                self._chroma_client.delete_collection(self.collection_name)
+                self._chroma_collection = self._chroma_client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"}
+                )
+                self.logger.info("Persistent document store cleared")
+            except Exception as e:
+                self.logger.warning(f"Error clearing persistent store: {e}")
+        
         self.logger.info("Document store cleared")
     
     def size(self) -> int:
         """Get number of chunks in the store"""
+        if self.use_persistence and self._chroma_collection:
+            try:
+                return self._chroma_collection.count()
+            except Exception:
+                pass
         return len(self._chunks)
+    
+    def exists(self) -> bool:
+        """Check if knowledge base exists (has any chunks)"""
+        return self.size() > 0
     
     def get_document_summary(self) -> Dict:
         """Get summary of documents in the store"""
-        if not self._chunks:
+        total_chunks = self.size()
+        
+        if total_chunks == 0:
             return {'total_chunks': 0, 'sources': []}
         
+        # Get sources from in-memory or persistent store
         sources = {}
-        for chunk in self._chunks:
-            metadata = chunk.get('metadata', {})
-            source = metadata.get('filename', metadata.get('source', 'Unknown'))
-            if source not in sources:
-                sources[source] = {
-                    'filename': source,
-                    'chunks': 0,
-                    'doc_type': metadata.get('doc_type', 'unknown')
-                }
-            sources[source]['chunks'] += 1
+        
+        if self.use_persistence and self._chroma_collection:
+            try:
+                # Get all documents from ChromaDB to analyze sources
+                all_results = self._chroma_collection.get()
+                if all_results and all_results.get('metadatas'):
+                    for metadata in all_results['metadatas']:
+                        source = metadata.get('filename', metadata.get('source', 'Unknown'))
+                        if source not in sources:
+                            sources[source] = {
+                                'filename': source,
+                                'chunks': 0,
+                                'doc_type': metadata.get('doc_type', 'unknown')
+                            }
+                        sources[source]['chunks'] += 1
+            except Exception as e:
+                self.logger.warning(f"Error getting summary from persistent store: {e}")
+        
+        # Fallback to in-memory
+        if not sources and self._chunks:
+            for chunk in self._chunks:
+                metadata = chunk.get('metadata', {})
+                source = metadata.get('filename', metadata.get('source', 'Unknown'))
+                if source not in sources:
+                    sources[source] = {
+                        'filename': source,
+                        'chunks': 0,
+                        'doc_type': metadata.get('doc_type', 'unknown')
+                    }
+                sources[source]['chunks'] += 1
         
         return {
-            'total_chunks': len(self._chunks),
+            'total_chunks': total_chunks,
             'sources': list(sources.values())
         }
     

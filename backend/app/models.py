@@ -177,3 +177,96 @@ class ResearchFinding(Base):
     
     # Relationships
     deal = relationship("Deal", back_populates="research_findings")
+
+
+# ============================================================================
+# Company Research Agent Models
+# ============================================================================
+
+class ScrapedCompany(Base):
+    """Companies scraped from public sources"""
+    __tablename__ = "scraped_company"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False, index=True)
+    description = Column(Text)
+    industry = Column(String(100), index=True)
+    stage = Column(String(100), index=True)  # Series B, Series C, etc.
+    valuation = Column(Float)  # Valuation in USD
+    valuation_currency = Column(String(10), default="USD")
+    key_investors = Column(Text)  # Comma-separated or JSON
+    location = Column(String(255), index=True)
+    country = Column(String(100), index=True)
+    founded_date = Column(DateTime)
+    employee_count = Column(Integer)
+    website = Column(String(500))
+    linkedin_url = Column(String(500))
+    data_source_id = Column(Integer, ForeignKey('data_source.id'), index=True)
+    scrape_job_id = Column(Integer, ForeignKey('scrape_job.id'), index=True)
+    raw_data = Column(JSON)  # Store original scraped data
+    is_validated = Column(Boolean, default=False)  # Passed filter criteria
+    match_reasoning = Column(Text)  # Why this company matched the filter criteria
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    data_source = relationship("DataSource", back_populates="companies")
+    scrape_job = relationship("ScrapeJob", back_populates="companies")
+    funding_rounds = relationship("FundingRound", back_populates="company", cascade="all, delete-orphan")
+
+
+class FundingRound(Base):
+    """Funding round history for scraped companies"""
+    __tablename__ = "funding_round"
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('scraped_company.id'), nullable=False, index=True)
+    round_type = Column(String(50))  # Seed, Series A, Series B, etc.
+    amount = Column(Float)  # Amount raised in USD
+    amount_currency = Column(String(10), default="USD")
+    date = Column(DateTime, index=True)
+    lead_investors = Column(Text)  # Comma-separated investor names
+    valuation = Column(Float)  # Post-money valuation
+    valuation_currency = Column(String(10), default="USD")
+    source_url = Column(String(500))  # Where this data came from
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    company = relationship("ScrapedCompany", back_populates="funding_rounds")
+
+
+class DataSource(Base):
+    """Track data sources for scraped companies"""
+    __tablename__ = "data_source"
+    id = Column(Integer, primary_key=True)
+    source_name = Column(String(100), nullable=False, unique=True, index=True)  # 'yc', 'techcrunch', etc.
+    source_type = Column(String(50))  # 'api', 'rss', 'scraper', 'dataset'
+    base_url = Column(String(500))
+    api_key_required = Column(Boolean, default=False)
+    reliability_score = Column(Float, default=0.5)  # 0-1 confidence in data quality
+    last_scraped = Column(DateTime(timezone=True))
+    scrape_frequency = Column(String(50))  # 'daily', 'weekly', 'monthly', 'on_demand'
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    companies = relationship("ScrapedCompany", back_populates="data_source")
+
+
+class ScrapeJob(Base):
+    """Track scraping jobs"""
+    __tablename__ = "scrape_job"
+    id = Column(Integer, primary_key=True)
+    status = Column(String(50), nullable=False, index=True)  # 'pending', 'running', 'completed', 'failed'
+    job_type = Column(String(50))  # 'scheduled', 'on_demand', 'full_refresh'
+    source_name = Column(String(100))  # Which source(s) to scrape
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    companies_found = Column(Integer, default=0)
+    companies_added = Column(Integer, default=0)  # New companies added
+    companies_updated = Column(Integer, default=0)  # Existing companies updated
+    errors = Column(Text)  # Error messages if any
+    job_metadata = Column(JSON)  # Additional job metadata (avoid reserved 'metadata')
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    companies = relationship("ScrapedCompany", back_populates="scrape_job")

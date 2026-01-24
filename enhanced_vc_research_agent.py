@@ -65,19 +65,12 @@ class EnhancedVCResearchAgent:
             excel_data
         )
         
-        # Step 5: Add VC knowledge context
-        vc_context = ""
-        if self.vc_knowledge_agent:
-            # Get VC context for industry/vertical
-            industry = excel_data.get('industry', '') or additional_info.get('industry', '')
-            if industry:
-                vc_context = self.vc_knowledge_agent.get_vc_context(
-                    f"venture capital analysis {industry} market trends benchmarks",
-                    top_k=5
-                )
+        # Step 5: VC knowledge base is used for training the agent (not as context)
+        # The agent has learned VC best practices and applies them automatically
+        # No need to inject VC context here - it's already in the agent's training
         
-        # Step 6: Enhance research with VC context
-        enhanced_research = self._enhance_with_vc_context(research_data, vc_context, excel_data)
+        # Step 6: Return enhanced research (VC knowledge is in agent's system prompt, not here)
+        enhanced_research = research_data
         
         # Step 7: Add validation metadata
         enhanced_research['_validation'] = {
@@ -153,14 +146,4 @@ class EnhancedVCResearchAgent:
             'typical_growth_rate': 'Not available',
         }
     
-    def _enhance_with_vc_context(self, research_data: Dict, vc_context: str, excel_data: Dict) -> Dict:
-        """Enhance research data with VC knowledge context"""
-        if not vc_context:
-            return research_data
-        
-        # Add VC context to industry background
-        industry_bg = research_data.get('industry_background', '')
-        if industry_bg:
-            research_data['industry_background'] = f"{industry_bg}\n\n**VC Industry Context:**\n{vc_context}"
-        
-        return research_data
+    # Removed _enhance_with_vc_context - VC knowledge is now used for agent training, not context injection

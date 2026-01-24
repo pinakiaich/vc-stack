@@ -11,7 +11,7 @@ from cache_service import CacheService
 class AIFilter:
     """AI-powered firm filtering using heuristics"""
     
-    def __init__(self, config: Config, use_hybrid_filter: bool = True):
+    def __init__(self, config: Config, use_hybrid_filter: bool = True, vc_knowledge_agent=None):
         """
         Initialize AI filter
         
@@ -19,6 +19,7 @@ class AIFilter:
             config: Configuration object
             use_hybrid_filter: If True, use hybrid filter (vector search + LLM).
                               If False, use original VC Expert only (slower)
+            vc_knowledge_agent: Optional VCKnowledgeTrainingAgent for training the VC Expert Agent
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
@@ -59,7 +60,8 @@ class AIFilter:
             self.hybrid_filter = None
         
         # Always initialize VC expert agent as fallback (even if using hybrid)
-        self.vc_expert = VCExpertAgent(config)
+        # Pass vc_knowledge_agent for training (not RAG context)
+        self.vc_expert = VCExpertAgent(config, vc_knowledge_agent=vc_knowledge_agent)
     
     def _setup_openai(self):
         """Initialize OpenAI client"""
