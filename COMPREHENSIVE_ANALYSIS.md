@@ -327,3 +327,9 @@ Companies will be ranked based on holistic view, not just basic fields
 
 The VC Expert will now provide institutional-quality analysis using ALL your PitchBook data.
 
+
+
+
+
+
+

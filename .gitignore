@@ -8,3 +8,11 @@ local.db
 .DS_Store
 .streamlit/secrets.toml
 venv/
+
+# Cache directory
+.cache/
+*.cache
+cache/
+
+# Local vector DB (ChromaDB)
+vc_knowledge_db/

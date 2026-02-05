@@ -12,3 +12,23 @@ starlette==0.48.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.37.0
+
+# Vector embeddings & semantic search (for hybrid filter)
+sentence-transformers>=2.2.0
+numpy>=1.24.0,<2.0.0  # Pin to < 2.0 for ChromaDB compatibility
+
+# Document processing for RAG
+unstructured[all-docs]>=0.10.0  # Multi-format document processing (Word, Excel, PPT, PDF, Images, etc.)
+PyPDF2>=3.0.0  # PDF processing (fallback)
+markdown>=3.4.0  # Markdown processing (optional)
+
+# Web scraping for URL ingestion
+requests>=2.31.0  # HTTP requests
+beautifulsoup4>=4.12.0  # HTML parsing
+lxml>=4.9.0  # HTML parser (faster than default)
+
+# Internet search for company research
+duckduckgo-search>=4.0.0  # Free internet search (optional)
+
+# Vector database for persistent knowledge base storage
+chromadb>=0.4.0  # Persistent vector store for VC knowledge base
